@@ -51,7 +51,10 @@ generate-ebpf:
 		echo "Error: clang not found. Please install: apt-get install clang llvm"; \
 		exit 1; \
 	fi
-	cd $(PKG_EBPF_DIR) && $(GO) generate
+	@echo "Compiling SockMap program..."
+	cd $(PKG_EBPF_DIR) && $(GO) generate ./sockmap.go
+	@echo "Compiling XDP program..."
+	cd $(PKG_EBPF_DIR) && $(GO) generate ./xdp.go
 	@echo "eBPF bindings generated successfully"
 
 ## install-deps: Install build dependencies (Linux only)
