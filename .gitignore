@@ -93,10 +93,14 @@ tmp/
 # Delve debugger
 __debug_bin
 
-# eBPF compiled objects (if implementing eBPF features later)
+# eBPF compiled objects and generated Go bindings
 *.o
 *.ll
-pkg/ebpflib/*.o
-pkg/ebpflib/bpf_*_bpfel.go
-pkg/ebpflib/bpf_*_bpfeb.go
+pkg/ebpf/bpf_bpfel.go
+pkg/ebpf/bpf_bpfeb.go
+pkg/ebpf/bpf_bpfel.o
+pkg/ebpf/bpf_bpfeb.o
+
+# Keep vendored BPF headers (DO NOT ignore)
+!pkg/ebpf/include/
 
