@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hgame-gateway
+  namespace: hgame
+  labels:
+    app: hgame-gateway
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: hgame-gateway
+  template:
+    metadata:
+      labels:
+        app: hgame-gateway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      terminationGracePeriodSeconds: 3600 # 关键！给长连接 1 小时的排空时间
+      containers:
+      - name: gateway
+        image: harbor.hgame.com/hgame/unified-gateway:v1.0.0
+        ports:
+        - name: http-tcp # 复用端口
+          containerPort: 8080
+        - name: metrics
+          containerPort: 9090
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 2000m
+            memory: 2Gi
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 9090
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9090
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        env:
+        - name: LOG_LEVEL
+          value: "info"
+        - name: GATEWAY_LISTEN_ADDR
+          value: ":8080"
+        - name: METRICS_LISTEN_ADDR
+          value: ":9090"
+        - name: HTTP_BACKEND_URL
+          value: "http://httpproxy-service:5000"
+        - name: TCP_BACKEND_ADDR
+          value: "gateserver-service:6000"
+        - name: SHUTDOWN_TIMEOUT
+          value: "60s"
+        - name: DRAIN_WAIT_TIME
+          value: "3600s"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hgame-gateway
+  namespace: hgame
+spec:
+  type: NodePort
+  selector:
+    app: hgame-gateway
+  ports:
+  - name: http-tcp
+    port: 80
+    targetPort: 8080
+    nodePort: 30080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hgame-gateway-hpa
+  namespace: hgame
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hgame-gateway
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+  # 自定义指标 (需要 Prometheus Adapter)
+  # - type: Pods
+  #   pods:
+  #     metric:
+  #       name: gateway_active_connections
+  #     target:
+  #       type: AverageValue
+  #       averageValue: "5000"
+

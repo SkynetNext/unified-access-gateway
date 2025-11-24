@@ -1,0 +1,22 @@
+# Unified Access Gateway Configuration
+# All values can be overridden by environment variables (see internal/config/config.go)
+
+server:
+  listen_addr: ":8080"
+  max_connections: 10000
+
+metrics:
+  enabled: true
+  listen_addr: ":9090"
+
+backends:
+  http:
+    target_url: "http://httpproxy-service:5000"
+    timeout: 30s
+  tcp:
+    target_addr: "gateserver-service:6000"
+    timeout: 60s
+
+lifecycle:
+  shutdown_timeout: 60s # Max time to wait for graceful shutdown
+  drain_wait_time: 3600s # Max time to drain long-lived connections (1 hour)

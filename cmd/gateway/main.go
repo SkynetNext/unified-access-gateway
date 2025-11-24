@@ -5,31 +5,33 @@ import (
 	"os/signal"
 	"syscall"
 	
-	"hgame-gateway/internal/core"
-	"hgame-gateway/pkg/xlog"
+	"github.com/SkynetNext/unified-access-gateway/internal/config"
+	"github.com/SkynetNext/unified-access-gateway/internal/core"
+	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 )
 
 func main() {
-	xlog.Infof("Starting Unified Gateway...")
+	xlog.Infof("Starting Unified Access Gateway (UAG)...")
 
-	// 1. 加载配置 (TODO)
-	
-	// 2. 初始化监听器 (监听 :8080)
-	listener := core.NewListener(":8080")
-	
-	// 3. 启动服务
-	if err := listener.Start(); err != nil {
-		xlog.Errorf("Failed to start listener: %v", err)
-		os.Exit(1)
-	}
+	// 1. Load Configuration (env vars override defaults)
+	cfg := config.LoadConfig()
+	xlog.Infof("Config loaded: listen=%s, metrics=%s", cfg.Server.ListenAddr, cfg.Metrics.ListenAddr)
 
-	// 4. 优雅停机
+	// 2. Initialize Server with configuration
+	server := core.NewServer(cfg)
+	
+	// 3. Start Server (Non-blocking)
+	server.Start()
+
+	// 4. Wait for Shutdown Signal (SIGINT/SIGTERM from K8s)
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	sig := <-quit
+	
+	xlog.Infof("Received signal: %v. Initiating graceful shutdown...", sig)
 
-	xlog.Infof("Shutting down server...")
-	listener.Stop()
-	xlog.Infof("Server exited")
+	// 5. Execute Graceful Shutdown (Drain Mode)
+	server.GracefulShutdown(cfg.Lifecycle.ShutdownTimeout)
+	
+	xlog.Infof("Server exited successfully.")
 }
-

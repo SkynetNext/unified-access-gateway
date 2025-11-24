@@ -1,0 +1,102 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+uag
+uag.exe
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# IDE - JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# IDE - Cursor
+.cursor/
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.swp
+*.swo
+*~
+
+# Build artifacts
+build/
+dist/
+bin/
+out/
+
+# Configuration overrides (keep template, ignore local overrides)
+config/local.yaml
+config/*.local.yaml
+.env
+.env.local
+
+# Kubernetes secrets (never commit secrets!)
+deploy/*-secret.yaml
+deploy/secrets/
+
+# Test coverage
+coverage.txt
+coverage.html
+*.coverprofile
+
+# Profiling data
+*.prof
+*.pprof
+cpu.prof
+mem.prof
+
+# Air live reload (if using)
+.air.toml
+tmp/
+
+# Delve debugger
+__debug_bin
+
+# eBPF compiled objects (if implementing eBPF features later)
+*.o
+*.ll
+pkg/ebpflib/*.o
+pkg/ebpflib/bpf_*_bpfel.go
+pkg/ebpflib/bpf_*_bpfeb.go
+
