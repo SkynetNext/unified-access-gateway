@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // eBPF SockMap program for socket redirection
-// This program redirects traffic between client and backend sockets at kernel
-// level
+// Reference:
+// https://medium.com/all-things-ebpf/optimizing-local-socket-communication-sockmap-and-ebpf-0edf1a1cea3c
 
 // Use vendored headers (no external dependencies)
 #include "include/bpf/bpf_endian.h"
@@ -9,98 +9,58 @@
 #include "include/linux/bpf.h"
 #include "include/linux/types.h"
 
-// Socket key structure (following Cilium's approach)
-// Using 5-tuple: src_ip, dst_ip, src_port, dst_port, family
-struct sock_key {
-  __u32 sip4;  // Source IPv4
-  __u32 dip4;  // Destination IPv4
-  __u32 sport; // Source port
-  __u32 dport; // Destination port
-  __u8 family; // Address family (AF_INET)
-  __u8 pad1;
-  __u16 pad2;
-} __attribute__((packed));
-
-// Map to store socket file descriptors
-// Following Cilium's design: using 5-tuple as key
-// Reference:
-// https://github.com/cilium/cilium/blob/v1.13/bpf/sockops/bpf_sockops.c
+// Map to store socket file descriptors (using socket cookie as key)
+// SOCKHASH allows efficient socket lookup and redirection
 struct {
   __uint(type, BPF_MAP_TYPE_SOCKHASH);
   __uint(max_entries, 65535);
-  __type(key, struct sock_key);
-  __type(value, int); // Cilium uses int, not __u64
+  __uint(key_size, sizeof(__u64));   // Socket cookie
+  __uint(value_size, sizeof(__u32)); // Socket reference
 } sock_map SEC(".maps");
 
 // Map to store socket pair relationships
-// Key: client socket key (5-tuple)
-// Value: backend socket key (5-tuple)
+// Key: client socket cookie
+// Value: backend socket cookie
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, 65535);
-  __type(key, struct sock_key);
-  __type(value, struct sock_key);
+  __uint(key_size, sizeof(__u64));
+  __uint(value_size, sizeof(__u64));
 } sock_pair_map SEC(".maps");
 
-// Parser program: extract socket key (cookie)
+// Parser program: parse incoming data length
 SEC("sk_skb/stream_parser")
 int sock_stream_parser(struct __sk_buff *skb) {
-  // Always accept the packet for verdict program
+  // Return the length of data to parse (entire packet)
   return skb->len;
-}
-
-// Helper: extract socket key from skb
-static __always_inline void sk_extract_key(struct __sk_buff *skb,
-                                           struct sock_key *key) {
-  key->sip4 = skb->remote_ip4;
-  key->dip4 = skb->local_ip4;
-  key->sport = bpf_ntohl(skb->remote_port);
-  key->dport = skb->local_port >> 16;
-  key->family = skb->family;
 }
 
 // Verdict program: decide where to redirect the packet
 SEC("sk_skb/stream_verdict")
 int sock_stream_verdict(struct __sk_buff *skb) {
-  struct sock_key key = {};
-  struct sock_key *peer_key;
+  __u64 cookie;
+  __u64 *peer_cookie;
 
-  // Extract 5-tuple from skb
-  sk_extract_key(skb, &key);
+  // Get socket cookie (unique identifier for this socket)
+  cookie = bpf_get_socket_cookie(skb);
 
-  // Lookup peer socket key from pair map
-  peer_key = bpf_map_lookup_elem(&sock_pair_map, &key);
-  if (!peer_key) {
+  // Lookup peer socket cookie from pair map
+  peer_cookie = bpf_map_lookup_elem(&sock_pair_map, &cookie);
+  if (!peer_cookie) {
     // No peer found, pass to userspace
     return SK_PASS;
   }
 
   // Redirect to peer socket (kernel-level forwarding)
-  long ret = bpf_sk_redirect_hash(skb, &sock_map, peer_key, BPF_F_INGRESS);
-  if (ret == SK_PASS) {
-    // Redirect succeeded
-    return SK_PASS;
-  }
-
-  // Redirect failed, pass to userspace
-  return SK_PASS;
+  return bpf_sk_redirect_hash(skb, &sock_map, peer_cookie, BPF_F_INGRESS);
 }
 
-// Helper: extract socket key from sock_ops
-static __always_inline void sk_extract_key_ops(struct bpf_sock_ops *skops,
-                                               struct sock_key *key) {
-  key->sip4 = skops->remote_ip4;
-  key->dip4 = skops->local_ip4;
-  key->sport = skops->remote_port;
-  key->dport = bpf_ntohl(skops->local_port);
-  key->family = skops->family;
-}
-
-// Sockops program: intercept socket operations (following Cilium's approach)
+// Sockops program: intercept socket operations
 SEC("sockops")
 int sock_ops_handler(struct bpf_sock_ops *skops) {
   __u32 op = skops->op;
-  struct sock_key key = {};
+  __u64 cookie;
+  int ret;
 
   switch (op) {
   case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
@@ -109,23 +69,26 @@ int sock_ops_handler(struct bpf_sock_ops *skops) {
     if (skops->family != AF_INET) {
       break;
     }
-    // Socket established, add to sockmap using 5-tuple as key
-    sk_extract_key_ops(skops, &key);
-    bpf_sock_hash_update(skops, &sock_map, &key, BPF_NOEXIST);
+
+    // Get socket cookie
+    cookie = bpf_get_socket_cookie_ops(skops);
+
+    // Add socket to sockmap
+    ret = bpf_sock_hash_update(skops, &sock_map, &cookie, BPF_NOEXIST);
     break;
 
   case BPF_SOCK_OPS_STATE_CB:
     // Socket state changed (e.g., closed)
     if (skops->args[1] == BPF_TCP_CLOSE && skops->family == AF_INET) {
-      sk_extract_key_ops(skops, &key);
+      cookie = bpf_get_socket_cookie_ops(skops);
       // Remove from maps (cleanup)
-      bpf_map_delete_elem(&sock_map, &key);
-      bpf_map_delete_elem(&sock_pair_map, &key);
+      bpf_map_delete_elem(&sock_map, &cookie);
+      bpf_map_delete_elem(&sock_pair_map, &cookie);
     }
     break;
   }
 
-  return 0; // Cilium returns 0, not 1
+  return 0;
 }
 
 char _license[] SEC("license") = "GPL";
