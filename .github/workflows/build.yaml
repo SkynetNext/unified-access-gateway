@@ -73,11 +73,13 @@ jobs:
             - name: Install eBPF dependencies
               run: |
                   sudo apt-get update
-                  sudo apt-get install -y clang-15 llvm-15 libbpf-dev
-                  sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 100
+                  sudo apt-get install -y clang-18 llvm-18 libbpf-dev
 
-                  echo "==> Clang version:"
-                  clang --version
+                  echo "==> Clang-18 version:"
+                  clang-18 --version
+
+                  echo "==> Check BPF target support:"
+                  clang-18 --print-targets | grep -i bpf || echo "BPF target check"
 
             - name: Set up Go
               uses: actions/setup-go@v5
@@ -95,10 +97,10 @@ jobs:
                   export GOPACKAGE=ebpf
 
                   echo "==> Generating SockMap eBPF..."
-                  bpf2go -cc clang -target bpf -cflags "-O2 -g -Wall" bpf sockmap.c -- -I./include
+                  bpf2go -cc clang-18 -target bpf -cflags "-O2 -g -Wall" bpf sockmap.c -- -I./include
 
                   echo "==> Generating XDP eBPF..."
-                  bpf2go -cc clang -target bpf -cflags "-O2 -g -Wall" xdp xdp_filter.c -- -I./include
+                  bpf2go -cc clang-18 -target bpf -cflags "-O2 -g -Wall" xdp xdp_filter.c -- -I./include
 
                   echo "==> Generated files:"
                   ls -la *.go
