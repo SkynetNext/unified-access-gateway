@@ -11,13 +11,13 @@
 
 // Map to store socket file descriptors
 // Key: socket cookie (unique identifier)
-// Value: socket fd
-// Using key_size/value_size instead of __type() to avoid BTF requirements
+// Value: socket (not fd, SOCKHASH stores socket references)
+// Note: SOCKHASH value_size must be sizeof(int) for socket reference
 struct {
   __uint(type, BPF_MAP_TYPE_SOCKHASH);
   __uint(max_entries, 65535);
-  __uint(key_size, sizeof(__u64));   // socket cookie
-  __uint(value_size, sizeof(__u64)); // socket fd
+  __uint(key_size, sizeof(__u64)); // socket cookie
+  __uint(value_size, sizeof(int)); // socket reference (required for SOCKHASH)
 } sock_map SEC(".maps");
 
 // Map to store socket pair relationships
