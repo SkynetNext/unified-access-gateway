@@ -109,6 +109,11 @@ spec:
             periodSeconds: 5
             failureThreshold: 30
 
+          volumeMounts:
+            - name: bpf-maps
+              mountPath: /sys/fs/bpf
+              mountPropagation: HostToContainer
+
           env:
             # Infrastructure Configuration
             - name: METRICS_ENABLED
@@ -159,6 +164,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+
+      volumes:
+        - name: bpf-maps
+          hostPath:
+            path: /sys/fs/bpf
+            type: DirectoryOrCreate
 
 ---
 apiVersion: v1
