@@ -20,3 +20,26 @@ backends:
 lifecycle:
   shutdown_timeout: 60s # Max time to wait for graceful shutdown
   drain_wait_time: 3600s # Max time to drain long-lived connections (1 hour)
+
+security:
+  auth:
+    enabled: false
+    header_subject: "X-Client-Subject"
+    allowed_subjects: []
+  rate_limit:
+    enabled: true
+    requests_per_second: 100
+    burst: 200
+  audit:
+    enabled: true
+    sink: "stdout"
+  waf:
+    enabled: false
+    blocked_ips: []
+    blocked_patterns: []
+  redis:
+    enabled: false
+    addr: "redis:6379"
+    password: ""
+    db: 0
+    key_prefix: "gateway:"

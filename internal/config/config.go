@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -12,6 +13,7 @@ type Config struct {
 	Metrics   MetricsConfig   `yaml:"metrics"`
 	Backends  BackendsConfig  `yaml:"backends"`
 	Lifecycle LifecycleConfig `yaml:"lifecycle"`
+	Security  SecurityConfig  `yaml:"security"`
 }
 
 type ServerConfig struct {
@@ -47,6 +49,45 @@ type LifecycleConfig struct {
 	DrainWaitTime time.Duration `yaml:"drain_wait_time" env:"DRAIN_WAIT_TIME"`
 }
 
+type SecurityConfig struct {
+	Auth      AuthConfig      `yaml:"auth"`
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
+	Audit     AuditConfig     `yaml:"audit"`
+	WAF       WAFConfig       `yaml:"waf"`
+	Redis     RedisConfig     `yaml:"redis"`
+}
+
+type RedisConfig struct {
+	Enabled   bool   `yaml:"enabled" env:"REDIS_ENABLED"`
+	Addr      string `yaml:"addr" env:"REDIS_ADDR"`
+	Password  string `yaml:"password" env:"REDIS_PASSWORD"`
+	DB        int    `yaml:"db" env:"REDIS_DB"`
+	KeyPrefix string `yaml:"key_prefix" env:"REDIS_KEY_PREFIX"`
+}
+
+type AuthConfig struct {
+	Enabled         bool     `yaml:"enabled" env:"AUTH_ENABLED"`
+	HeaderSubject   string   `yaml:"header_subject" env:"AUTH_HEADER_SUBJECT"`
+	AllowedSubjects []string `yaml:"allowed_subjects" env:"AUTH_ALLOWED_SUBJECTS"`
+}
+
+type RateLimitConfig struct {
+	Enabled           bool    `yaml:"enabled" env:"RATE_LIMIT_ENABLED"`
+	RequestsPerSecond float64 `yaml:"requests_per_second" env:"RATE_LIMIT_RPS"`
+	Burst             int     `yaml:"burst" env:"RATE_LIMIT_BURST"`
+}
+
+type AuditConfig struct {
+	Enabled bool   `yaml:"enabled" env:"AUDIT_ENABLED"`
+	Sink    string `yaml:"sink" env:"AUDIT_SINK"`
+}
+
+type WAFConfig struct {
+	Enabled         bool     `yaml:"enabled" env:"WAF_ENABLED"`
+	BlockedIPs      []string `yaml:"blocked_ips" env:"WAF_BLOCKED_IPS"`
+	BlockedPatterns []string `yaml:"blocked_patterns" env:"WAF_BLOCKED_PATTERNS"`
+}
+
 // LoadConfig loads configuration from environment variables with defaults
 func LoadConfig() *Config {
 	return &Config{
@@ -71,6 +112,34 @@ func LoadConfig() *Config {
 		Lifecycle: LifecycleConfig{
 			ShutdownTimeout: getEnvDuration("SHUTDOWN_TIMEOUT", 60*time.Second),
 			DrainWaitTime:   getEnvDuration("DRAIN_WAIT_TIME", 3600*time.Second), // 1 hour for gaming
+		},
+		Security: SecurityConfig{
+			Auth: AuthConfig{
+				Enabled:         getEnvBool("AUTH_ENABLED", false),
+				HeaderSubject:   getEnv("AUTH_HEADER_SUBJECT", "X-Client-Subject"),
+				AllowedSubjects: getEnvSlice("AUTH_ALLOWED_SUBJECTS"),
+			},
+			RateLimit: RateLimitConfig{
+				Enabled:           getEnvBool("RATE_LIMIT_ENABLED", true),
+				RequestsPerSecond: getEnvFloat("RATE_LIMIT_RPS", 100),
+				Burst:             getEnvInt("RATE_LIMIT_BURST", 200),
+			},
+			Audit: AuditConfig{
+				Enabled: getEnvBool("AUDIT_ENABLED", true),
+				Sink:    getEnv("AUDIT_SINK", "stdout"),
+			},
+			WAF: WAFConfig{
+				Enabled:         getEnvBool("WAF_ENABLED", false),
+				BlockedIPs:      getEnvSlice("WAF_BLOCKED_IPS"),
+				BlockedPatterns: getEnvSlice("WAF_BLOCKED_PATTERNS"),
+			},
+			Redis: RedisConfig{
+				Enabled:   getEnvBool("REDIS_ENABLED", false),
+				Addr:      getEnv("REDIS_ADDR", "localhost:6379"),
+				Password:  getEnv("REDIS_PASSWORD", ""),
+				DB:        getEnvInt("REDIS_DB", 0),
+				KeyPrefix: getEnv("REDIS_KEY_PREFIX", "gateway:"),
+			},
 		},
 	}
 }
@@ -105,4 +174,27 @@ func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
 		}
 	}
 	return defaultValue
+}
+
+func getEnvFloat(key string, defaultValue float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		var result float64
+		fmt.Sscanf(v, "%f", &result)
+		return result
+	}
+	return defaultValue
+}
+
+func getEnvSlice(key string) []string {
+	if v := os.Getenv(key); v != "" {
+		parts := strings.Split(v, ",")
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	}
+	return nil
 }

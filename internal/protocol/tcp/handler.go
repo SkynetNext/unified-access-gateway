@@ -5,26 +5,33 @@ import (
 	"net"
 	"os"
 	"time"
-	
-	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
+
+	"github.com/SkynetNext/unified-access-gateway/internal/config"
 	"github.com/SkynetNext/unified-access-gateway/internal/middleware"
+	"github.com/SkynetNext/unified-access-gateway/internal/security"
 	"github.com/SkynetNext/unified-access-gateway/pkg/ebpf"
+	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 )
 
 type Handler struct {
-	backendAddr   string
-	sockMapMgr    *ebpf.SockMapManager
-	ebpfEnabled   bool
+	backendAddr string
+	sockMapMgr  *ebpf.SockMapManager
+	ebpfEnabled bool
+	security    *security.Manager
 }
 
-func NewHandler() *Handler {
-	addr := os.Getenv("TCP_BACKEND_ADDR")
+func NewHandler(cfg *config.Config, sec *security.Manager) *Handler {
+	addr := cfg.Backends.TCP.TargetAddr
+	if addr == "" {
+		addr = os.Getenv("TCP_BACKEND_ADDR")
+	}
 	if addr == "" {
 		addr = "127.0.0.1:9621"
 	}
-	
+
 	h := &Handler{
 		backendAddr: addr,
+		security:    sec,
 	}
 	
 	// Try to initialize eBPF SockMap (optional, graceful fallback)
@@ -58,11 +65,17 @@ func (h *Handler) Handle(src net.Conn) {
 	dst, err := net.DialTimeout("tcp", h.backendAddr, connTimeout)
 	if err != nil {
 		xlog.Errorf("Failed to dial backend %s: %v", h.backendAddr, err)
+		if h.security != nil {
+			h.security.AuditTCP(src.RemoteAddr().String(), h.backendAddr, false, err.Error())
+		}
 		return
 	}
 	defer dst.Close()
 
 	xlog.Infof("TCP Proxy: %s <-> %s", src.RemoteAddr(), dst.RemoteAddr())
+	if h.security != nil {
+		h.security.AuditTCP(src.RemoteAddr().String(), h.backendAddr, true, "")
+	}
 
 	// Register socket pair for eBPF redirection (if enabled)
 	if h.ebpfEnabled {

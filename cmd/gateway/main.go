@@ -4,7 +4,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	
+
 	"github.com/SkynetNext/unified-access-gateway/internal/config"
 	"github.com/SkynetNext/unified-access-gateway/internal/core"
 	"github.com/SkynetNext/unified-access-gateway/internal/discovery"
@@ -64,9 +64,20 @@ func main() {
 		}
 	}
 
-	// 5. Initialize Server with configuration
-	server := core.NewServer(cfg)
-	
+	// 5. Initialize Redis config store if enabled
+	var redisStore *config.RedisStore
+	if cfg.Security.Redis.Enabled {
+		store, err := config.NewRedisStore(&cfg.Security.Redis)
+		if err != nil {
+			xlog.Errorf("Failed to initialize Redis config store: %v", err)
+		} else {
+			redisStore = store
+		}
+	}
+
+	// 6. Initialize Server with configuration
+	server := core.NewServer(cfg, redisStore)
+
 	// 6. Start Server (Non-blocking)
 	server.Start()
 
@@ -74,11 +85,11 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
-	
+
 	xlog.Infof("Received signal: %v. Initiating graceful shutdown...", sig)
 
 	// 8. Execute Graceful Shutdown (Drain Mode)
 	server.GracefulShutdown(cfg.Lifecycle.ShutdownTimeout)
-	
+
 	xlog.Infof("Server exited successfully.")
 }

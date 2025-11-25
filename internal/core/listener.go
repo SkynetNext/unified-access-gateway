@@ -1,24 +1,33 @@
 package core
 
 import (
-	"github.com/SkynetNext/unified-access-gateway/internal/protocol/http"
-	"github.com/SkynetNext/unified-access-gateway/internal/protocol/tcp"
-	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 	"net"
+
+	"github.com/SkynetNext/unified-access-gateway/internal/config"
+	httpproxy "github.com/SkynetNext/unified-access-gateway/internal/protocol/http"
+	tcpproxy "github.com/SkynetNext/unified-access-gateway/internal/protocol/tcp"
+	"github.com/SkynetNext/unified-access-gateway/internal/security"
+	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 )
 
 type Listener struct {
-	address     string
-	listener    net.Listener
-	httpHandler *http.Handler
-	tcpHandler  *tcp.Handler
+	address  string
+	listener net.Listener
+
+	cfg      *config.Config
+	security *security.Manager
+
+	httpHandler *httpproxy.Handler
+	tcpHandler  *tcpproxy.Handler
 }
 
-func NewListener(addr string) *Listener {
+func NewListener(cfg *config.Config, sec *security.Manager) *Listener {
 	return &Listener{
-		address:     addr,
-		httpHandler: http.NewHandler(),
-		tcpHandler:  tcp.NewHandler(),
+		address:     cfg.Server.ListenAddr,
+		cfg:         cfg,
+		security:    sec,
+		httpHandler: httpproxy.NewHandler(cfg, sec),
+		tcpHandler:  tcpproxy.NewHandler(cfg, sec),
 	}
 }
 
@@ -28,9 +37,9 @@ func (l *Listener) Start() error {
 	if err != nil {
 		return err
 	}
-	
+
 	xlog.Infof("Gateway listening on %s", l.address)
-	
+
 	go l.acceptLoop()
 	return nil
 }
@@ -55,6 +64,14 @@ func (l *Listener) acceptLoop() {
 }
 
 func (l *Listener) handleConn(c net.Conn) {
+	if l.security != nil {
+		if err := l.security.CheckConnection(c.RemoteAddr()); err != nil {
+			xlog.Warnf("Connection %s rejected: %v", c.RemoteAddr(), err)
+			l.security.AuditTCP(c.RemoteAddr().String(), "", false, err.Error())
+			c.Close()
+			return
+		}
+	}
 	// 1. Wrap connection (Support Peek)
 	sniffConn := NewSniffConn(c)
 
@@ -66,11 +83,11 @@ func (l *Listener) handleConn(c net.Conn) {
 	case ProtocolHTTP:
 		xlog.Debugf("Conn %s -> HTTP", c.RemoteAddr())
 		l.httpHandler.ServeConn(sniffConn)
-		
+
 	case ProtocolTCP:
 		xlog.Debugf("Conn %s -> TCP", c.RemoteAddr())
 		l.tcpHandler.Handle(sniffConn)
-		
+
 	default:
 		xlog.Warnf("Conn %s -> Unknown Protocol, closing", c.RemoteAddr())
 		c.Close()
