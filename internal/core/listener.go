@@ -1,8 +1,10 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/SkynetNext/unified-access-gateway/internal/config"
 	httpproxy "github.com/SkynetNext/unified-access-gateway/internal/protocol/http"
@@ -70,9 +72,25 @@ func (l *Listener) acceptLoop() {
 	for {
 		conn, err := l.listener.Accept()
 		if err != nil {
-			// Log error but don't crash, could be just a closed listener
+			// Check if listener was closed (normal shutdown during graceful shutdown)
+			errStr := err.Error()
+			if strings.Contains(errStr, "use of closed network connection") ||
+				strings.Contains(errStr, "operation on closed") {
+				// Listener was closed, exit gracefully (this is expected during shutdown)
+				xlog.Infof("Listener closed, exiting accept loop")
+				return
+			}
+			
+			// Check for temporary errors (network issues, can retry)
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Temporary() {
+				xlog.Warnf("Temporary accept error: %v", err)
+				continue
+			}
+			
+			// Other permanent errors
 			xlog.Errorf("Accept error: %v", err)
-			continue
+			return
 		}
 
 		go l.handleConn(conn)
