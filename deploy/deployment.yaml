@@ -47,6 +47,7 @@ spec:
 
           # eBPF security context (copied from Cilium cilium-agent)
           securityContext:
+            runAsUser: 0 # Run as root (required for rlimit operations)
             capabilities:
               add:
                 - CHOWN
