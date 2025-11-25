@@ -66,15 +66,15 @@ type RedisConfig struct {
 }
 
 type AuthConfig struct {
-	Enabled         bool     `yaml:"enabled" env:"AUTH_ENABLED"`
-	HeaderSubject   string   `yaml:"header_subject" env:"AUTH_HEADER_SUBJECT"`
-	AllowedSubjects []string `yaml:"allowed_subjects" env:"AUTH_ALLOWED_SUBJECTS"`
+	Enabled         bool     `yaml:"enabled"`
+	HeaderSubject   string   `yaml:"header_subject"`
+	AllowedSubjects []string `yaml:"allowed_subjects"`
 }
 
 type RateLimitConfig struct {
-	Enabled           bool    `yaml:"enabled" env:"RATE_LIMIT_ENABLED"`
-	RequestsPerSecond float64 `yaml:"requests_per_second" env:"RATE_LIMIT_RPS"`
-	Burst             int     `yaml:"burst" env:"RATE_LIMIT_BURST"`
+	Enabled           bool    `yaml:"enabled"`
+	RequestsPerSecond float64 `yaml:"requests_per_second"`
+	Burst             int     `yaml:"burst"`
 }
 
 type AuditConfig struct {
@@ -83,13 +83,39 @@ type AuditConfig struct {
 }
 
 type WAFConfig struct {
-	Enabled         bool     `yaml:"enabled" env:"WAF_ENABLED"`
-	BlockedIPs      []string `yaml:"blocked_ips" env:"WAF_BLOCKED_IPS"`
-	BlockedPatterns []string `yaml:"blocked_patterns" env:"WAF_BLOCKED_PATTERNS"`
+	Enabled         bool     `yaml:"enabled"`
+	BlockedIPs      []string `yaml:"blocked_ips"`
+	BlockedPatterns []string `yaml:"blocked_patterns"`
+}
+
+// DefaultSecurityState returns the built-in security configuration used before Redis hydrate.
+func DefaultSecurityState() SecurityConfig {
+	return SecurityConfig{
+		Auth: AuthConfig{
+			Enabled:         false,
+			HeaderSubject:   "X-Client-Subject",
+			AllowedSubjects: nil,
+		},
+		RateLimit: RateLimitConfig{
+			Enabled:           true,
+			RequestsPerSecond: 100,
+			Burst:             200,
+		},
+		Audit: AuditConfig{
+			Enabled: true,
+			Sink:    "stdout",
+		},
+		WAF: WAFConfig{
+			Enabled:         false,
+			BlockedIPs:      nil,
+			BlockedPatterns: nil,
+		},
+	}
 }
 
 // LoadConfig loads configuration from environment variables with defaults
 func LoadConfig() *Config {
+	defaultSecurity := DefaultSecurityState()
 	return &Config{
 		Server: ServerConfig{
 			ListenAddr:     getEnv("GATEWAY_LISTEN_ADDR", ":8080"),
@@ -114,27 +140,15 @@ func LoadConfig() *Config {
 			DrainWaitTime:   getEnvDuration("DRAIN_WAIT_TIME", 3600*time.Second), // 1 hour for gaming
 		},
 		Security: SecurityConfig{
-			Auth: AuthConfig{
-				Enabled:         getEnvBool("AUTH_ENABLED", false),
-				HeaderSubject:   getEnv("AUTH_HEADER_SUBJECT", "X-Client-Subject"),
-				AllowedSubjects: getEnvSlice("AUTH_ALLOWED_SUBJECTS"),
-			},
-			RateLimit: RateLimitConfig{
-				Enabled:           getEnvBool("RATE_LIMIT_ENABLED", true),
-				RequestsPerSecond: getEnvFloat("RATE_LIMIT_RPS", 100),
-				Burst:             getEnvInt("RATE_LIMIT_BURST", 200),
-			},
+			Auth:      defaultSecurity.Auth,
+			RateLimit: defaultSecurity.RateLimit,
 			Audit: AuditConfig{
-				Enabled: getEnvBool("AUDIT_ENABLED", true),
-				Sink:    getEnv("AUDIT_SINK", "stdout"),
+				Enabled: getEnvBool("AUDIT_ENABLED", defaultSecurity.Audit.Enabled),
+				Sink:    getEnv("AUDIT_SINK", defaultSecurity.Audit.Sink),
 			},
-			WAF: WAFConfig{
-				Enabled:         getEnvBool("WAF_ENABLED", false),
-				BlockedIPs:      getEnvSlice("WAF_BLOCKED_IPS"),
-				BlockedPatterns: getEnvSlice("WAF_BLOCKED_PATTERNS"),
-			},
+			WAF: defaultSecurity.WAF,
 			Redis: RedisConfig{
-				Enabled:   getEnvBool("REDIS_ENABLED", false),
+				Enabled:   getEnvBool("REDIS_ENABLED", true),
 				Addr:      getEnv("REDIS_ADDR", "localhost:6379"),
 				Password:  getEnv("REDIS_PASSWORD", ""),
 				DB:        getEnvInt("REDIS_DB", 0),

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"slices"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -46,17 +47,17 @@ func (a *AdminAPI) handleConfig(w http.ResponseWriter, r *http.Request) {
 	defer a.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"security": map[string]interface{}{
-			"auth": map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]any{
+		"security": map[string]any{
+			"auth": map[string]any{
 				"enabled": a.cfg.Security.Auth.Enabled,
 			},
-			"rate_limit": map[string]interface{}{
+			"rate_limit": map[string]any{
 				"enabled":             a.cfg.Security.RateLimit.Enabled,
 				"requests_per_second": a.cfg.Security.RateLimit.RequestsPerSecond,
 				"burst":               a.cfg.Security.RateLimit.Burst,
 			},
-			"waf": map[string]interface{}{
+			"waf": map[string]any{
 				"enabled":          a.cfg.Security.WAF.Enabled,
 				"blocked_ips":      a.cfg.Security.WAF.BlockedIPs,
 				"blocked_patterns": a.cfg.Security.WAF.BlockedPatterns,
@@ -160,13 +161,7 @@ func (a *AdminAPI) handleWAFIPs(w http.ResponseWriter, r *http.Request) {
 			a.setBlockedIPs(ips)
 		} else {
 			for _, ip := range req.IPs {
-				found := false
-				for _, existing := range a.cfg.Security.WAF.BlockedIPs {
-					if existing == ip {
-						found = true
-						break
-					}
-				}
+				found := slices.Contains(a.cfg.Security.WAF.BlockedIPs, ip)
 				if !found {
 					a.cfg.Security.WAF.BlockedIPs = append(a.cfg.Security.WAF.BlockedIPs, ip)
 				}

@@ -3,11 +3,14 @@ package config
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 	"github.com/redis/go-redis/v9"
 )
+
+var errSecurityConfigNotFound = errors.New("security config not found in redis")
 
 // RedisStore manages dynamic security configuration in Redis
 type RedisStore struct {
@@ -340,6 +343,38 @@ func (r *RedisStore) RemoveAllowedSubjects(subjects []string) error {
 	return nil
 }
 
+// SetAuthConfig stores the high-level auth configuration (enabled flag and header)
+func (r *RedisStore) SetAuthConfig(cfg AuthConfig) error {
+	if r == nil {
+		return fmt.Errorf("Redis store not enabled")
+	}
+	if err := r.client.HSet(r.ctx, r.prefix+"auth:config", map[string]interface{}{
+		"enabled":        cfg.Enabled,
+		"header_subject": cfg.HeaderSubject,
+	}).Err(); err != nil {
+		return err
+	}
+	r.publishChange("auth_config", map[string]interface{}{
+		"enabled":        cfg.Enabled,
+		"header_subject": cfg.HeaderSubject,
+	})
+	return nil
+}
+
+// SetWAFEnabled toggles the WAF enforcement flag
+func (r *RedisStore) SetWAFEnabled(enabled bool) error {
+	if r == nil {
+		return fmt.Errorf("Redis store not enabled")
+	}
+	if err := r.client.HSet(r.ctx, r.prefix+"waf:config", "enabled", enabled).Err(); err != nil {
+		return err
+	}
+	r.publishChange("waf_config", map[string]interface{}{
+		"enabled": enabled,
+	})
+	return nil
+}
+
 // publishChange publishes a configuration change notification
 func (r *RedisStore) publishChange(changeType string, data interface{}) {
 	raw, err := json.Marshal(data)
@@ -362,11 +397,33 @@ func (r *RedisStore) publishChange(changeType string, data interface{}) {
 // LoadAllFromRedis loads all security configuration from Redis
 func (r *RedisStore) LoadAllFromRedis() (*SecurityConfig, error) {
 	if r == nil {
-		return nil, nil
+		return nil, fmt.Errorf("redis store not initialized")
 	}
 
-	cfg := &SecurityConfig{}
+	cfg := DefaultSecurityState()
 	found := false
+
+	if exists, err := r.keyExists(r.prefix + "auth:config"); err == nil && exists {
+		enabled := r.client.HGet(r.ctx, r.prefix+"auth:config", "enabled").Val()
+		header := r.client.HGet(r.ctx, r.prefix+"auth:config", "header_subject").Val()
+		cfg.Auth.Enabled = enabled == "1" || enabled == "true"
+		if header != "" {
+			cfg.Auth.HeaderSubject = header
+		}
+		found = true
+	} else if err != nil {
+		return nil, err
+	}
+	if exists, err := r.keyExists(r.prefix + "auth:allowed_subjects"); err == nil && exists {
+		subjects, err := r.GetAllowedSubjects()
+		if err != nil {
+			return nil, err
+		}
+		cfg.Auth.AllowedSubjects = subjects
+		found = true
+	} else if err != nil {
+		return nil, err
+	}
 
 	if exists, err := r.keyExists(r.prefix + "rate_limit"); err == nil && exists {
 		enabled, rps, burst, err := r.GetRateLimit()
@@ -383,6 +440,13 @@ func (r *RedisStore) LoadAllFromRedis() (*SecurityConfig, error) {
 		return nil, err
 	}
 
+	if exists, err := r.keyExists(r.prefix + "waf:config"); err == nil && exists {
+		wafEnabled := r.client.HGet(r.ctx, r.prefix+"waf:config", "enabled").Val()
+		cfg.WAF.Enabled = wafEnabled == "1" || wafEnabled == "true"
+		found = true
+	} else if err != nil {
+		return nil, err
+	}
 	if exists, err := r.keyExists(r.prefix + "waf:blocked_ips"); err == nil && exists {
 		ips, err := r.GetBlockedIPs()
 		if err != nil {
@@ -393,7 +457,6 @@ func (r *RedisStore) LoadAllFromRedis() (*SecurityConfig, error) {
 	} else if err != nil {
 		return nil, err
 	}
-
 	if exists, err := r.keyExists(r.prefix + "waf:patterns"); err == nil && exists {
 		patterns, err := r.GetBlockedPatterns()
 		if err != nil {
@@ -405,28 +468,29 @@ func (r *RedisStore) LoadAllFromRedis() (*SecurityConfig, error) {
 		return nil, err
 	}
 
-	if exists, err := r.keyExists(r.prefix + "auth:allowed_subjects"); err == nil && exists {
-		subjects, err := r.GetAllowedSubjects()
-		if err != nil {
-			return nil, err
-		}
-		cfg.Auth.AllowedSubjects = subjects
-		found = true
-	} else if err != nil {
-		return nil, err
-	}
-
 	if !found {
-		return nil, nil
+		return nil, errSecurityConfigNotFound
 	}
 
-	return cfg, nil
+	return &cfg, nil
 }
 
 // SyncToRedis syncs current config to Redis (for initial setup)
 func (r *RedisStore) SyncToRedis(cfg *SecurityConfig) error {
 	if r == nil {
 		return nil
+	}
+
+	if err := r.SetAuthConfig(cfg.Auth); err != nil {
+		return err
+	}
+	if err := r.client.Del(r.ctx, r.prefix+"auth:allowed_subjects").Err(); err != nil {
+		return err
+	}
+	if len(cfg.Auth.AllowedSubjects) > 0 {
+		if err := r.AddAllowedSubjects(cfg.Auth.AllowedSubjects); err != nil {
+			return err
+		}
 	}
 
 	// Sync rate limit
@@ -438,24 +502,23 @@ func (r *RedisStore) SyncToRedis(cfg *SecurityConfig) error {
 		xlog.Warnf("Failed to sync rate limit to Redis: %v", err)
 	}
 
-	// Sync WAF IPs
+	if err := r.SetWAFEnabled(cfg.WAF.Enabled); err != nil {
+		return err
+	}
+	if err := r.client.Del(r.ctx, r.prefix+"waf:blocked_ips").Err(); err != nil {
+		return err
+	}
 	if len(cfg.WAF.BlockedIPs) > 0 {
 		if err := r.AddBlockedIPs(cfg.WAF.BlockedIPs); err != nil {
-			xlog.Warnf("Failed to sync WAF IPs to Redis: %v", err)
+			return err
 		}
 	}
-
-	// Sync WAF patterns
+	if err := r.client.Del(r.ctx, r.prefix+"waf:patterns").Err(); err != nil {
+		return err
+	}
 	if len(cfg.WAF.BlockedPatterns) > 0 {
 		if err := r.AddBlockedPatterns(cfg.WAF.BlockedPatterns); err != nil {
-			xlog.Warnf("Failed to sync WAF patterns to Redis: %v", err)
-		}
-	}
-
-	// Sync auth subjects
-	if len(cfg.Auth.AllowedSubjects) > 0 {
-		if err := r.AddAllowedSubjects(cfg.Auth.AllowedSubjects); err != nil {
-			xlog.Warnf("Failed to sync auth subjects to Redis: %v", err)
+			return err
 		}
 	}
 
