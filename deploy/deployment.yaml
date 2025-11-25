@@ -35,21 +35,37 @@ spec:
       imagePullSecrets:
         - name: harbor-credential
 
+      # Pod-level security context (copied from Cilium)
+      securityContext:
+        appArmorProfile:
+          type: Unconfined
+
       containers:
         - name: gateway
           image: 14.103.46.72/uag/unified-access-gateway:latest
           imagePullPolicy: Always
 
-          # eBPF requires high privileges in most K8s environments
-          # Cilium and other eBPF tools typically run as privileged
+          # eBPF security context (copied from Cilium cilium-agent)
           securityContext:
-            privileged: true
             capabilities:
               add:
-                - BPF
+                - CHOWN
+                - KILL
                 - NET_ADMIN
-                - SYS_RESOURCE # Required for rlimit
-              # drop: []  # Keep default capabilities
+                - NET_RAW
+                - IPC_LOCK
+                - SYS_MODULE
+                - SYS_ADMIN
+                - SYS_RESOURCE
+                - DAC_OVERRIDE
+                - FOWNER
+                - SETGID
+                - SETUID
+              drop:
+                - ALL
+            seLinuxOptions:
+              level: s0
+              type: spc_t
 
           ports:
             - name: business
