@@ -3,7 +3,6 @@ package tcp
 import (
 	"io"
 	"net"
-	"os"
 	"time"
 
 	"github.com/SkynetNext/unified-access-gateway/internal/config"
@@ -23,10 +22,9 @@ type Handler struct {
 func NewHandler(cfg *config.Config, sec *security.Manager) *Handler {
 	addr := cfg.Backends.TCP.TargetAddr
 	if addr == "" {
-		addr = os.Getenv("TCP_BACKEND_ADDR")
-	}
-	if addr == "" {
-		addr = "127.0.0.1:9621"
+		// Business config MUST be loaded from Redis, no fallback
+		xlog.Errorf("CRITICAL: backends.tcp.target_addr is not configured (must be set in Redis)")
+		return nil
 	}
 
 	h := &Handler{

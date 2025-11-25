@@ -1,110 +1,235 @@
+# Unified Access Gateway (UAG) - Independent Microservice Deployment
+# Namespace: uag (isolated from hgame)
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: hgame-gateway
-  namespace: hgame
+  name: uag
+  namespace: uag
   labels:
-    app: hgame-gateway
+    app: uag
+    app.kubernetes.io/name: unified-access-gateway
+    app.kubernetes.io/component: gateway
+    version: v1
 spec:
   replicas: 3
   selector:
     matchLabels:
-      app: hgame-gateway
+      app: uag
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
-        app: hgame-gateway
+        app: uag
+        version: v1
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
     spec:
-      terminationGracePeriodSeconds: 3600 # 关键！给长连接 1 小时的排空时间
+      terminationGracePeriodSeconds: 3600
+
       containers:
-      - name: gateway
-        image: harbor.hgame.com/hgame/unified-gateway:v1.0.0
-        ports:
-        - name: http-tcp # 复用端口
-          containerPort: 8080
-        - name: metrics
-          containerPort: 9090
-        resources:
-          requests:
-            cpu: 500m
-            memory: 512Mi
-          limits:
-            cpu: 2000m
-            memory: 2Gi
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: 9090
-          initialDelaySeconds: 5
-          periodSeconds: 5
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 9090
-          initialDelaySeconds: 15
-          periodSeconds: 20
-        env:
-        - name: LOG_LEVEL
-          value: "info"
-        - name: GATEWAY_LISTEN_ADDR
-          value: ":8080"
-        - name: METRICS_LISTEN_ADDR
-          value: ":9090"
-        - name: HTTP_BACKEND_URL
-          value: "http://httpproxy-service:5000"
-        - name: TCP_BACKEND_ADDR
-          value: "gateserver-service:6000"
-        - name: SHUTDOWN_TIMEOUT
-          value: "60s"
-        - name: DRAIN_WAIT_TIME
-          value: "3600s"
+        - name: gateway
+          image: 14.103.46.72/uag/unified-access-gateway:latest
+          imagePullPolicy: Always
+
+          ports:
+            - name: business
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+
+          env:
+            # Infrastructure Configuration
+            - name: METRICS_ENABLED
+              value: "true"
+            - name: METRICS_LISTEN_ADDR
+              value: ":9090"
+
+            # Redis (existing Redis on ECS cluster)
+            - name: REDIS_ENABLED
+              value: "true"
+            - name: REDIS_ADDR
+              value: "10.1.0.8:6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: uag-secrets
+                  key: redis-password
+                  optional: true
+            - name: REDIS_DB
+              value: "0"
+            - name: REDIS_KEY_PREFIX
+              value: "uag:"
+
+            # Audit
+            - name: AUDIT_ENABLED
+              value: "true"
+            - name: AUDIT_SINK
+              value: "stdout"
+
+            # Tracing (cross-namespace)
+            - name: JAEGER_ENDPOINT
+              value: "http://jaeger-collector.monitoring.svc.cluster.local:14268/api/traces"
+
+            # K8s metadata
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: hgame-gateway
-  namespace: hgame
+  name: uag
+  namespace: uag
+  labels:
+    app: uag
+spec:
+  type: ClusterIP
+  selector:
+    app: uag
+  ports:
+    - name: business
+      port: 80
+      targetPort: 8080
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+
+---
+# External access via NodePort (or use Ingress/LoadBalancer)
+apiVersion: v1
+kind: Service
+metadata:
+  name: uag-external
+  namespace: uag
+  labels:
+    app: uag
 spec:
   type: NodePort
   selector:
-    app: hgame-gateway
+    app: uag
   ports:
-  - name: http-tcp
-    port: 80
-    targetPort: 8080
-    nodePort: 30080
-  - name: metrics
-    port: 9090
-    targetPort: 9090
+    - name: business
+      port: 80
+      targetPort: 8080
+      nodePort: 30080
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      nodePort: 30090
+
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: hgame-gateway-hpa
-  namespace: hgame
+  name: uag-hpa
+  namespace: uag
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: hgame-gateway
+    name: uag
   minReplicas: 3
   maxReplicas: 20
   metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 60
-  # 自定义指标 (需要 Prometheus Adapter)
-  # - type: Pods
-  #   pods:
-  #     metric:
-  #       name: gateway_active_connections
-  #     target:
-  #       type: AverageValue
-  #       averageValue: "5000"
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
 
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: uag-secrets
+  namespace: uag
+type: Opaque
+stringData:
+  redis-password: ""
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: uag-pdb
+  namespace: uag
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: uag

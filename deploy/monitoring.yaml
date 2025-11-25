@@ -1,0 +1,89 @@
+# UAG Monitoring Resources
+# ServiceMonitor for Prometheus Operator
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: uag
+  namespace: monitoring
+  labels:
+    app: uag
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: uag
+  namespaceSelector:
+    matchNames:
+      - uag
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics
+      scheme: http
+
+---
+# Grafana Dashboard ConfigMap (optional)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: uag-grafana-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  uag-dashboard.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "title": "Unified Access Gateway",
+      "uid": "uag-dashboard",
+      "version": 1,
+      "panels": [
+        {
+          "title": "Active Connections",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "targets": [
+            {
+              "expr": "sum(gateway_active_connections)",
+              "legendFormat": "Active"
+            }
+          ]
+        },
+        {
+          "title": "Requests per Second",
+          "type": "graph",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+          "targets": [
+            {
+              "expr": "sum(rate(gateway_requests_total[1m]))",
+              "legendFormat": "QPS"
+            }
+          ]
+        },
+        {
+          "title": "Request Latency (p99)",
+          "type": "graph",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.99, sum(rate(gateway_request_duration_seconds_bucket[5m])) by (le))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "title": "Pod Count",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "targets": [
+            {
+              "expr": "count(up{job=\"uag\"})",
+              "legendFormat": "Pods"
+            }
+          ]
+        }
+      ]
+    }

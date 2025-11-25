@@ -1,0 +1,9 @@
+# Unified Access Gateway Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: uag
+  labels:
+    name: uag
+    app.kubernetes.io/name: unified-access-gateway
+    app.kubernetes.io/component: gateway

@@ -8,61 +8,89 @@ import (
 )
 
 // Config holds all gateway configuration
+// Configuration is divided into two categories:
+// 1. Business Configuration: Can be changed without affecting gateway readiness
+// 2. Infrastructure Configuration: Critical for gateway operation, affects readiness
 type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	Metrics   MetricsConfig   `yaml:"metrics"`
-	Backends  BackendsConfig  `yaml:"backends"`
-	Lifecycle LifecycleConfig `yaml:"lifecycle"`
-	Security  SecurityConfig  `yaml:"security"`
+	// Business Configuration
+	Server    ServerConfig    `yaml:"server"`    // Listening ports, max connections
+	Backends  BackendsConfig  `yaml:"backends"`  // Forwarding rules
+	Lifecycle LifecycleConfig `yaml:"lifecycle"` // Shutdown timeouts
+
+	// Infrastructure Configuration
+	Metrics  MetricsConfig  `yaml:"metrics"`  // Prometheus metrics server
+	Security SecurityConfig `yaml:"security"` // Redis, Auth, WAF (affects readiness)
 }
 
+// ServerConfig - Business Configuration
+// Controls gateway's listening address and connection limits
 type ServerConfig struct {
-	ListenAddr string `yaml:"listen_addr" env:"GATEWAY_LISTEN_ADDR"`
+	ListenAddr string `yaml:"listen_addr" env:"GATEWAY_LISTEN_ADDR"` // Business: Listening port
 	// Maximum concurrent connections
-	MaxConnections int `yaml:"max_connections" env:"GATEWAY_MAX_CONNECTIONS"`
+	MaxConnections int `yaml:"max_connections" env:"GATEWAY_MAX_CONNECTIONS"` // Business: Max online connections
 }
 
+// MetricsConfig - Infrastructure Configuration
+// Prometheus metrics server configuration
+// If metrics server fails, gateway continues running but monitoring is unavailable
 type MetricsConfig struct {
-	Enabled    bool   `yaml:"enabled" env:"METRICS_ENABLED"`
-	ListenAddr string `yaml:"listen_addr" env:"METRICS_LISTEN_ADDR"`
+	Enabled    bool   `yaml:"enabled" env:"METRICS_ENABLED"`           // Infrastructure: Enable metrics
+	ListenAddr string `yaml:"listen_addr" env:"METRICS_LISTEN_ADDR"`    // Infrastructure: Metrics port
 }
 
+// BackendsConfig - Business Configuration
+// Forwarding rules for HTTP and TCP traffic
 type BackendsConfig struct {
-	HTTP HTTPBackend `yaml:"http"`
-	TCP  TCPBackend  `yaml:"tcp"`
+	HTTP HTTPBackend `yaml:"http"` // Business: HTTP forwarding rules
+	TCP  TCPBackend  `yaml:"tcp"`  // Business: TCP forwarding rules
 }
 
+// HTTPBackend - Business Configuration
+// HTTP backend service forwarding configuration
 type HTTPBackend struct {
-	TargetURL string        `yaml:"target_url" env:"HTTP_BACKEND_URL"`
-	Timeout   time.Duration `yaml:"timeout" env:"HTTP_BACKEND_TIMEOUT"`
+	TargetURL string        `yaml:"target_url" env:"HTTP_BACKEND_URL"`       // Business: Backend URL
+	Timeout   time.Duration `yaml:"timeout" env:"HTTP_BACKEND_TIMEOUT"`      // Business: Request timeout
 }
 
+// TCPBackend - Business Configuration
+// TCP backend service forwarding configuration
 type TCPBackend struct {
-	TargetAddr string        `yaml:"target_addr" env:"TCP_BACKEND_ADDR"`
-	Timeout    time.Duration `yaml:"timeout" env:"TCP_BACKEND_TIMEOUT"`
+	TargetAddr string        `yaml:"target_addr" env:"TCP_BACKEND_ADDR"`    // Business: Backend address
+	Timeout    time.Duration `yaml:"timeout" env:"TCP_BACKEND_TIMEOUT"`       // Business: Connection timeout
 }
 
+// LifecycleConfig - Business Configuration
+// Graceful shutdown and drain mode configuration
 type LifecycleConfig struct {
 	// Graceful shutdown timeout (for draining connections)
-	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" env:"SHUTDOWN_TIMEOUT"`
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" env:"SHUTDOWN_TIMEOUT"` // Business: Shutdown timeout
 	// Drain mode wait time (for long-lived TCP connections)
-	DrainWaitTime time.Duration `yaml:"drain_wait_time" env:"DRAIN_WAIT_TIME"`
+	DrainWaitTime time.Duration `yaml:"drain_wait_time" env:"DRAIN_WAIT_TIME"`     // Business: Drain wait time
 }
 
+// SecurityConfig - Infrastructure Configuration
+// Security-related configuration including Redis
+// If Redis is enabled but unavailable, gateway should be Running but NOT Ready
 type SecurityConfig struct {
-	Auth      AuthConfig      `yaml:"auth"`
-	RateLimit RateLimitConfig `yaml:"rate_limit"`
-	Audit     AuditConfig     `yaml:"audit"`
-	WAF       WAFConfig       `yaml:"waf"`
-	Redis     RedisConfig     `yaml:"redis"`
+	Auth      AuthConfig      `yaml:"auth"`       // Security: Authentication config
+	RateLimit RateLimitConfig `yaml:"rate_limit"` // Security: Rate limiting config
+	Audit     AuditConfig     `yaml:"audit"`      // Security: Audit logging config
+	WAF       WAFConfig       `yaml:"waf"`       // Security: WAF config
+	Redis     RedisConfig     `yaml:"redis"`      // Infrastructure: Redis config (affects readiness)
 }
 
+// RedisConfig - Infrastructure Configuration
+// Redis configuration for dynamic security config storage
+// CRITICAL: If enabled but unavailable, gateway is Running but NOT Ready
+// - /ready returns 503 Service Unavailable
+// - /health returns 200 OK (gateway is still alive)
+// - K8s removes pod from service endpoints (no traffic routed)
 type RedisConfig struct {
-	Enabled   bool   `yaml:"enabled" env:"REDIS_ENABLED"`
-	Addr      string `yaml:"addr" env:"REDIS_ADDR"`
-	Password  string `yaml:"password" env:"REDIS_PASSWORD"`
-	DB        int    `yaml:"db" env:"REDIS_DB"`
-	KeyPrefix string `yaml:"key_prefix" env:"REDIS_KEY_PREFIX"`
+	Enabled   bool   `yaml:"enabled" env:"REDIS_ENABLED"`         // Infrastructure: Enable Redis
+	Addr      string `yaml:"addr" env:"REDIS_ADDR"`               // Infrastructure: Redis address
+	Password  string `yaml:"password" env:"REDIS_PASSWORD"`       // Infrastructure: Redis password
+	DB        int    `yaml:"db" env:"REDIS_DB"`                    // Infrastructure: Redis database
+	KeyPrefix string `yaml:"key_prefix" env:"REDIS_KEY_PREFIX"`   // Infrastructure: Redis key prefix
 }
 
 type AuthConfig struct {
@@ -113,31 +141,21 @@ func DefaultSecurityState() SecurityConfig {
 	}
 }
 
-// LoadConfig loads configuration from environment variables with defaults
+// LoadConfig loads INFRASTRUCTURE configuration from environment variables
+// NOTE: Business config (Server, Backends, Lifecycle) is loaded from Redis, not here
 func LoadConfig() *Config {
 	defaultSecurity := DefaultSecurityState()
 	return &Config{
-		Server: ServerConfig{
-			ListenAddr:     getEnv("GATEWAY_LISTEN_ADDR", ":8080"),
-			MaxConnections: getEnvInt("GATEWAY_MAX_CONNECTIONS", 10000),
-		},
+		// Business Configuration - NO DEFAULTS
+		// These MUST be loaded from Redis in main.go
+		Server:    ServerConfig{},
+		Backends:  BackendsConfig{},
+		Lifecycle: LifecycleConfig{},
+
+		// Infrastructure Configuration - Has defaults
 		Metrics: MetricsConfig{
 			Enabled:    getEnvBool("METRICS_ENABLED", true),
 			ListenAddr: getEnv("METRICS_LISTEN_ADDR", ":9090"),
-		},
-		Backends: BackendsConfig{
-			HTTP: HTTPBackend{
-				TargetURL: getEnv("HTTP_BACKEND_URL", "http://localhost:5000"),
-				Timeout:   getEnvDuration("HTTP_BACKEND_TIMEOUT", 30*time.Second),
-			},
-			TCP: TCPBackend{
-				TargetAddr: getEnv("TCP_BACKEND_ADDR", "localhost:6000"),
-				Timeout:    getEnvDuration("TCP_BACKEND_TIMEOUT", 60*time.Second),
-			},
-		},
-		Lifecycle: LifecycleConfig{
-			ShutdownTimeout: getEnvDuration("SHUTDOWN_TIMEOUT", 60*time.Second),
-			DrainWaitTime:   getEnvDuration("DRAIN_WAIT_TIME", 3600*time.Second), // 1 hour for gaming
 		},
 		Security: SecurityConfig{
 			Auth:      defaultSecurity.Auth,

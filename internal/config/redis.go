@@ -5,14 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 	"github.com/redis/go-redis/v9"
 )
 
-var errSecurityConfigNotFound = errors.New("security config not found in redis")
+var (
+	ErrRedisNotEnabled        = errors.New("redis store not enabled")
+	ErrBusinessConfigNotFound = errors.New("business config not found in redis")
+	ErrSecurityConfigNotFound = errors.New("security config not found in redis")
+)
 
-// RedisStore manages dynamic security configuration in Redis
+// RedisStore manages configuration loaded from Redis
+// IMPORTANT: Gateway is READ-ONLY. All configuration writes are done by external admin tools.
 type RedisStore struct {
 	client  *redis.Client
 	prefix  string
@@ -21,12 +27,13 @@ type RedisStore struct {
 	updates chan ConfigUpdate
 }
 
+// ConfigUpdate represents a configuration change notification from Redis pub/sub
 type ConfigUpdate struct {
-	Type string          `json:"type"` // "rate_limit", "waf_ips", "waf_patterns", "auth_subjects"
+	Type string          `json:"type"` // "business", "security", "rate_limit", "waf", etc.
 	Data json.RawMessage `json:"data"`
 }
 
-// NewRedisStore creates a new Redis configuration store
+// NewRedisStore creates a new Redis configuration store (READ-ONLY)
 func NewRedisStore(cfg *RedisConfig) (*RedisStore, error) {
 	if !cfg.Enabled {
 		return nil, nil
@@ -51,18 +58,18 @@ func NewRedisStore(cfg *RedisConfig) (*RedisStore, error) {
 		updates: make(chan ConfigUpdate, 10),
 	}
 
-	// Subscribe to configuration changes
+	// Subscribe to configuration changes (for hot-reload)
 	pubsub := client.Subscribe(ctx, store.prefix+"config:changed")
 	store.pubsub = pubsub
 
 	// Start listening for updates in background
 	go store.listenUpdates()
 
-	xlog.Infof("Redis config store initialized: addr=%s, prefix=%s", cfg.Addr, cfg.KeyPrefix)
+	xlog.Infof("Redis config store initialized (READ-ONLY): addr=%s, prefix=%s", cfg.Addr, cfg.KeyPrefix)
 	return store, nil
 }
 
-// listenUpdates listens for Redis pub/sub messages
+// listenUpdates listens for Redis pub/sub messages for config hot-reload
 func (r *RedisStore) listenUpdates() {
 	ch := r.pubsub.Channel()
 	for msg := range ch {
@@ -73,6 +80,7 @@ func (r *RedisStore) listenUpdates() {
 		}
 		select {
 		case r.updates <- update:
+			xlog.Infof("Received config update: type=%s", update.Type)
 		default:
 			xlog.Warnf("Config update channel full, dropping update")
 		}
@@ -98,429 +106,151 @@ func (r *RedisStore) Close() error {
 	return r.client.Close()
 }
 
-func (r *RedisStore) keyExists(key string) (bool, error) {
+// CheckHealth checks if Redis connection is healthy
+func (r *RedisStore) CheckHealth() error {
 	if r == nil {
-		return false, fmt.Errorf("Redis store not enabled")
+		return ErrRedisNotEnabled
 	}
-	count, err := r.client.Exists(r.ctx, key).Result()
+	return r.client.Ping(r.ctx).Err()
+}
+
+// =============================================================================
+// Business Configuration - READ ONLY
+// =============================================================================
+
+// BusinessConfig represents business configuration stored in Redis
+// Gateway ONLY reads this, never writes. External admin tools manage this.
+type BusinessConfig struct {
+	Server    ServerConfig    `json:"server"`
+	Backends  BackendsConfig  `json:"backends"`
+	Lifecycle LifecycleConfig `json:"lifecycle"`
+}
+
+// LoadBusinessConfig loads business configuration from Redis
+// Returns error if Redis is unavailable or config is missing
+// Gateway will NOT start listener if this fails
+func (r *RedisStore) LoadBusinessConfig() (*BusinessConfig, error) {
+	if r == nil {
+		return nil, ErrRedisNotEnabled
+	}
+
+	key := r.prefix + "business:config"
+	exists, err := r.client.Exists(r.ctx, key).Result()
 	if err != nil {
-		return false, err
+		return nil, fmt.Errorf("failed to check business config: %w", err)
 	}
-	return count > 0, nil
-}
-
-// Rate Limit Operations
-
-func (r *RedisStore) GetRateLimit() (enabled bool, rps float64, burst int, err error) {
-	if r == nil {
-		return false, 0, 0, fmt.Errorf("Redis store not enabled")
+	if exists == 0 {
+		return nil, ErrBusinessConfigNotFound
 	}
 
-	enabledStr := r.client.HGet(r.ctx, r.prefix+"rate_limit", "enabled").Val()
-	rpsStr := r.client.HGet(r.ctx, r.prefix+"rate_limit", "rps").Val()
-	burstStr := r.client.HGet(r.ctx, r.prefix+"rate_limit", "burst").Val()
-
-	enabled = enabledStr == "1" || enabledStr == "true"
-	if rpsStr != "" {
-		fmt.Sscanf(rpsStr, "%f", &rps)
-	}
-	if burstStr != "" {
-		fmt.Sscanf(burstStr, "%d", &burst)
-	}
-
-	return enabled, rps, burst, nil
-}
-
-func (r *RedisStore) SetRateLimit(enabled bool, rps float64, burst int) error {
-	if r == nil {
-		return fmt.Errorf("Redis store not enabled")
-	}
-
-	pipe := r.client.Pipeline()
-	pipe.HSet(r.ctx, r.prefix+"rate_limit", "enabled", enabled)
-	pipe.HSet(r.ctx, r.prefix+"rate_limit", "rps", rps)
-	pipe.HSet(r.ctx, r.prefix+"rate_limit", "burst", burst)
-	_, err := pipe.Exec(r.ctx)
+	// Load config from Redis hash
+	result, err := r.client.HGetAll(r.ctx, key).Result()
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("failed to load business config: %w", err)
 	}
 
-	// Publish change notification
-	r.publishChange("rate_limit", map[string]interface{}{
-		"enabled": enabled,
-		"rps":     rps,
-		"burst":   burst,
-	})
-	return nil
+	cfg := &BusinessConfig{}
+
+	// Server config
+	if v, ok := result["server.listen_addr"]; ok && v != "" {
+		cfg.Server.ListenAddr = v
+	}
+	if v, ok := result["server.max_connections"]; ok && v != "" {
+		fmt.Sscanf(v, "%d", &cfg.Server.MaxConnections)
+	}
+
+	// HTTP Backend
+	if v, ok := result["backends.http.target_url"]; ok && v != "" {
+		cfg.Backends.HTTP.TargetURL = v
+	}
+	if v, ok := result["backends.http.timeout"]; ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Backends.HTTP.Timeout = d
+		}
+	}
+
+	// TCP Backend
+	if v, ok := result["backends.tcp.target_addr"]; ok && v != "" {
+		cfg.Backends.TCP.TargetAddr = v
+	}
+	if v, ok := result["backends.tcp.timeout"]; ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Backends.TCP.Timeout = d
+		}
+	}
+
+	// Lifecycle config
+	if v, ok := result["lifecycle.shutdown_timeout"]; ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Lifecycle.ShutdownTimeout = d
+		}
+	}
+	if v, ok := result["lifecycle.drain_wait_time"]; ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Lifecycle.DrainWaitTime = d
+		}
+	}
+
+	return cfg, nil
 }
 
-// WAF IP Operations
+// =============================================================================
+// Security Configuration - READ ONLY
+// =============================================================================
 
-func (r *RedisStore) GetBlockedIPs() ([]string, error) {
+// LoadSecurityConfig loads security configuration from Redis
+// Gateway ONLY reads this, never writes. External admin tools manage this.
+func (r *RedisStore) LoadSecurityConfig() (*SecurityConfig, error) {
 	if r == nil {
-		return nil, fmt.Errorf("Redis store not enabled")
-	}
-
-	members := r.client.SMembers(r.ctx, r.prefix+"waf:blocked_ips").Val()
-	return members, nil
-}
-
-func (r *RedisStore) AddBlockedIPs(ips []string) error {
-	if r == nil {
-		return fmt.Errorf("Redis store not enabled")
-	}
-
-	if len(ips) == 0 {
-		return nil
-	}
-
-	pipe := r.client.Pipeline()
-	for _, ip := range ips {
-		pipe.SAdd(r.ctx, r.prefix+"waf:blocked_ips", ip)
-	}
-	_, err := pipe.Exec(r.ctx)
-	if err != nil {
-		return err
-	}
-
-	// Publish change notification
-	r.publishChange("waf_ips", map[string]interface{}{
-		"action": "add",
-		"ips":    ips,
-	})
-	return nil
-}
-
-func (r *RedisStore) RemoveBlockedIPs(ips []string) error {
-	if r == nil {
-		return fmt.Errorf("Redis store not enabled")
-	}
-
-	if len(ips) == 0 {
-		return nil
-	}
-
-	pipe := r.client.Pipeline()
-	for _, ip := range ips {
-		pipe.SRem(r.ctx, r.prefix+"waf:blocked_ips", ip)
-	}
-	_, err := pipe.Exec(r.ctx)
-	if err != nil {
-		return err
-	}
-
-	// Publish change notification
-	r.publishChange("waf_ips", map[string]interface{}{
-		"action": "remove",
-		"ips":    ips,
-	})
-	return nil
-}
-
-// WAF Pattern Operations
-
-func (r *RedisStore) GetBlockedPatterns() ([]string, error) {
-	if r == nil {
-		return nil, fmt.Errorf("Redis store not enabled")
-	}
-
-	patterns := r.client.LRange(r.ctx, r.prefix+"waf:patterns", 0, -1).Val()
-	return patterns, nil
-}
-
-func (r *RedisStore) AddBlockedPatterns(patterns []string) error {
-	if r == nil {
-		return fmt.Errorf("Redis store not enabled")
-	}
-
-	if len(patterns) == 0 {
-		return nil
-	}
-
-	pipe := r.client.Pipeline()
-	for _, pattern := range patterns {
-		pipe.LPush(r.ctx, r.prefix+"waf:patterns", pattern)
-	}
-	_, err := pipe.Exec(r.ctx)
-	if err != nil {
-		return err
-	}
-
-	// Publish change notification
-	r.publishChange("waf_patterns", map[string]interface{}{
-		"action":   "add",
-		"patterns": patterns,
-	})
-	return nil
-}
-
-func (r *RedisStore) RemoveBlockedPatterns(patterns []string) error {
-	if r == nil {
-		return fmt.Errorf("Redis store not enabled")
-	}
-
-	if len(patterns) == 0 {
-		return nil
-	}
-
-	pipe := r.client.Pipeline()
-	for _, pattern := range patterns {
-		pipe.LRem(r.ctx, r.prefix+"waf:patterns", 0, pattern)
-	}
-	_, err := pipe.Exec(r.ctx)
-	if err != nil {
-		return err
-	}
-
-	// Publish change notification
-	r.publishChange("waf_patterns", map[string]interface{}{
-		"action":   "remove",
-		"patterns": patterns,
-	})
-	return nil
-}
-
-// Auth Subject Operations
-
-func (r *RedisStore) GetAllowedSubjects() ([]string, error) {
-	if r == nil {
-		return nil, fmt.Errorf("Redis store not enabled")
-	}
-
-	members := r.client.SMembers(r.ctx, r.prefix+"auth:allowed_subjects").Val()
-	return members, nil
-}
-
-func (r *RedisStore) AddAllowedSubjects(subjects []string) error {
-	if r == nil {
-		return fmt.Errorf("Redis store not enabled")
-	}
-
-	if len(subjects) == 0 {
-		return nil
-	}
-
-	pipe := r.client.Pipeline()
-	for _, subject := range subjects {
-		pipe.SAdd(r.ctx, r.prefix+"auth:allowed_subjects", subject)
-	}
-	_, err := pipe.Exec(r.ctx)
-	if err != nil {
-		return err
-	}
-
-	// Publish change notification
-	r.publishChange("auth_subjects", map[string]interface{}{
-		"action":   "add",
-		"subjects": subjects,
-	})
-	return nil
-}
-
-func (r *RedisStore) RemoveAllowedSubjects(subjects []string) error {
-	if r == nil {
-		return fmt.Errorf("Redis store not enabled")
-	}
-
-	if len(subjects) == 0 {
-		return nil
-	}
-
-	pipe := r.client.Pipeline()
-	for _, subject := range subjects {
-		pipe.SRem(r.ctx, r.prefix+"auth:allowed_subjects", subject)
-	}
-	_, err := pipe.Exec(r.ctx)
-	if err != nil {
-		return err
-	}
-
-	// Publish change notification
-	r.publishChange("auth_subjects", map[string]interface{}{
-		"action":   "remove",
-		"subjects": subjects,
-	})
-	return nil
-}
-
-// SetAuthConfig stores the high-level auth configuration (enabled flag and header)
-func (r *RedisStore) SetAuthConfig(cfg AuthConfig) error {
-	if r == nil {
-		return fmt.Errorf("Redis store not enabled")
-	}
-	if err := r.client.HSet(r.ctx, r.prefix+"auth:config", map[string]interface{}{
-		"enabled":        cfg.Enabled,
-		"header_subject": cfg.HeaderSubject,
-	}).Err(); err != nil {
-		return err
-	}
-	r.publishChange("auth_config", map[string]interface{}{
-		"enabled":        cfg.Enabled,
-		"header_subject": cfg.HeaderSubject,
-	})
-	return nil
-}
-
-// SetWAFEnabled toggles the WAF enforcement flag
-func (r *RedisStore) SetWAFEnabled(enabled bool) error {
-	if r == nil {
-		return fmt.Errorf("Redis store not enabled")
-	}
-	if err := r.client.HSet(r.ctx, r.prefix+"waf:config", "enabled", enabled).Err(); err != nil {
-		return err
-	}
-	r.publishChange("waf_config", map[string]interface{}{
-		"enabled": enabled,
-	})
-	return nil
-}
-
-// publishChange publishes a configuration change notification
-func (r *RedisStore) publishChange(changeType string, data interface{}) {
-	raw, err := json.Marshal(data)
-	if err != nil {
-		xlog.Warnf("Failed to marshal config update data: %v", err)
-		return
-	}
-	update := ConfigUpdate{
-		Type: changeType,
-		Data: raw,
-	}
-	payload, err := json.Marshal(update)
-	if err != nil {
-		xlog.Warnf("Failed to marshal config update: %v", err)
-		return
-	}
-	r.client.Publish(r.ctx, r.prefix+"config:changed", payload)
-}
-
-// LoadAllFromRedis loads all security configuration from Redis
-func (r *RedisStore) LoadAllFromRedis() (*SecurityConfig, error) {
-	if r == nil {
-		return nil, fmt.Errorf("redis store not initialized")
+		return nil, ErrRedisNotEnabled
 	}
 
 	cfg := DefaultSecurityState()
-	found := false
 
-	if exists, err := r.keyExists(r.prefix + "auth:config"); err == nil && exists {
-		enabled := r.client.HGet(r.ctx, r.prefix+"auth:config", "enabled").Val()
-		header := r.client.HGet(r.ctx, r.prefix+"auth:config", "header_subject").Val()
-		cfg.Auth.Enabled = enabled == "1" || enabled == "true"
-		if header != "" {
-			cfg.Auth.HeaderSubject = header
+	// Load Auth config
+	if authCfg, err := r.client.HGetAll(r.ctx, r.prefix+"auth:config").Result(); err == nil && len(authCfg) > 0 {
+		if v, ok := authCfg["enabled"]; ok {
+			cfg.Auth.Enabled = v == "1" || v == "true"
 		}
-		found = true
-	} else if err != nil {
-		return nil, err
+		if v, ok := authCfg["header_subject"]; ok && v != "" {
+			cfg.Auth.HeaderSubject = v
+		}
 	}
-	if exists, err := r.keyExists(r.prefix + "auth:allowed_subjects"); err == nil && exists {
-		subjects, err := r.GetAllowedSubjects()
-		if err != nil {
-			return nil, err
-		}
+
+	// Load allowed subjects
+	if subjects, err := r.client.SMembers(r.ctx, r.prefix+"auth:allowed_subjects").Result(); err == nil {
 		cfg.Auth.AllowedSubjects = subjects
-		found = true
-	} else if err != nil {
-		return nil, err
 	}
 
-	if exists, err := r.keyExists(r.prefix + "rate_limit"); err == nil && exists {
-		enabled, rps, burst, err := r.GetRateLimit()
-		if err != nil {
-			return nil, err
+	// Load Rate Limit config
+	if rateCfg, err := r.client.HGetAll(r.ctx, r.prefix+"rate_limit").Result(); err == nil && len(rateCfg) > 0 {
+		if v, ok := rateCfg["enabled"]; ok {
+			cfg.RateLimit.Enabled = v == "1" || v == "true"
 		}
-		cfg.RateLimit = RateLimitConfig{
-			Enabled:           enabled,
-			RequestsPerSecond: rps,
-			Burst:             burst,
+		if v, ok := rateCfg["rps"]; ok && v != "" {
+			fmt.Sscanf(v, "%f", &cfg.RateLimit.RequestsPerSecond)
 		}
-		found = true
-	} else if err != nil {
-		return nil, err
+		if v, ok := rateCfg["burst"]; ok && v != "" {
+			fmt.Sscanf(v, "%d", &cfg.RateLimit.Burst)
+		}
 	}
 
-	if exists, err := r.keyExists(r.prefix + "waf:config"); err == nil && exists {
-		wafEnabled := r.client.HGet(r.ctx, r.prefix+"waf:config", "enabled").Val()
-		cfg.WAF.Enabled = wafEnabled == "1" || wafEnabled == "true"
-		found = true
-	} else if err != nil {
-		return nil, err
-	}
-	if exists, err := r.keyExists(r.prefix + "waf:blocked_ips"); err == nil && exists {
-		ips, err := r.GetBlockedIPs()
-		if err != nil {
-			return nil, err
+	// Load WAF config
+	if wafCfg, err := r.client.HGetAll(r.ctx, r.prefix+"waf:config").Result(); err == nil && len(wafCfg) > 0 {
+		if v, ok := wafCfg["enabled"]; ok {
+			cfg.WAF.Enabled = v == "1" || v == "true"
 		}
+	}
+
+	// Load blocked IPs (using Set for atomic add/remove without overwrite)
+	if ips, err := r.client.SMembers(r.ctx, r.prefix+"waf:blocked_ips").Result(); err == nil {
 		cfg.WAF.BlockedIPs = ips
-		found = true
-	} else if err != nil {
-		return nil, err
-	}
-	if exists, err := r.keyExists(r.prefix + "waf:patterns"); err == nil && exists {
-		patterns, err := r.GetBlockedPatterns()
-		if err != nil {
-			return nil, err
-		}
-		cfg.WAF.BlockedPatterns = patterns
-		found = true
-	} else if err != nil {
-		return nil, err
 	}
 
-	if !found {
-		return nil, errSecurityConfigNotFound
+	// Load blocked patterns (using Set for atomic add/remove without overwrite)
+	if patterns, err := r.client.SMembers(r.ctx, r.prefix+"waf:blocked_patterns").Result(); err == nil {
+		cfg.WAF.BlockedPatterns = patterns
 	}
 
 	return &cfg, nil
-}
-
-// SyncToRedis syncs current config to Redis (for initial setup)
-func (r *RedisStore) SyncToRedis(cfg *SecurityConfig) error {
-	if r == nil {
-		return nil
-	}
-
-	if err := r.SetAuthConfig(cfg.Auth); err != nil {
-		return err
-	}
-	if err := r.client.Del(r.ctx, r.prefix+"auth:allowed_subjects").Err(); err != nil {
-		return err
-	}
-	if len(cfg.Auth.AllowedSubjects) > 0 {
-		if err := r.AddAllowedSubjects(cfg.Auth.AllowedSubjects); err != nil {
-			return err
-		}
-	}
-
-	// Sync rate limit
-	if err := r.SetRateLimit(
-		cfg.RateLimit.Enabled,
-		cfg.RateLimit.RequestsPerSecond,
-		cfg.RateLimit.Burst,
-	); err != nil {
-		xlog.Warnf("Failed to sync rate limit to Redis: %v", err)
-	}
-
-	if err := r.SetWAFEnabled(cfg.WAF.Enabled); err != nil {
-		return err
-	}
-	if err := r.client.Del(r.ctx, r.prefix+"waf:blocked_ips").Err(); err != nil {
-		return err
-	}
-	if len(cfg.WAF.BlockedIPs) > 0 {
-		if err := r.AddBlockedIPs(cfg.WAF.BlockedIPs); err != nil {
-			return err
-		}
-	}
-	if err := r.client.Del(r.ctx, r.prefix+"waf:patterns").Err(); err != nil {
-		return err
-	}
-	if len(cfg.WAF.BlockedPatterns) > 0 {
-		if err := r.AddBlockedPatterns(cfg.WAF.BlockedPatterns); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }

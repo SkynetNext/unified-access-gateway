@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
 	"time"
 
 	"github.com/SkynetNext/unified-access-gateway/internal/config"
@@ -23,16 +22,15 @@ type Handler struct {
 func NewHandler(cfg *config.Config, sec *security.Manager) *Handler {
 	backend := cfg.Backends.HTTP.TargetURL
 	if backend == "" {
-		backend = os.Getenv("HTTP_BACKEND_URL")
-	}
-	if backend == "" {
-		backend = "http://127.0.0.1:8181"
+		// Business config MUST be loaded from Redis, no fallback
+		xlog.Errorf("CRITICAL: backends.http.target_url is not configured (must be set in Redis)")
+		return nil
 	}
 
 	target, err := url.Parse(backend)
 	if err != nil {
-		xlog.Errorf("Invalid backend URL: %s, error: %v", backend, err)
-		target, _ = url.Parse("http://127.0.0.1:8181")
+		xlog.Errorf("CRITICAL: Invalid backend URL: %s, error: %v", backend, err)
+		return nil
 	}
 
 	// Custom Director to support Metrics and Header modification

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"net"
 
 	"github.com/SkynetNext/unified-access-gateway/internal/config"
@@ -22,16 +23,31 @@ type Listener struct {
 }
 
 func NewListener(cfg *config.Config, sec *security.Manager) *Listener {
-	return &Listener{
-		address:     cfg.Server.ListenAddr,
-		cfg:         cfg,
-		security:    sec,
-		httpHandler: httpproxy.NewHandler(cfg, sec),
-		tcpHandler:  tcpproxy.NewHandler(cfg, sec),
+	l := &Listener{
+		address:  cfg.Server.ListenAddr,
+		cfg:      cfg,
+		security: sec,
 	}
+
+	// Create handlers (may return nil if config is missing)
+	l.httpHandler = httpproxy.NewHandler(cfg, sec)
+	l.tcpHandler = tcpproxy.NewHandler(cfg, sec)
+
+	return l
 }
 
 func (l *Listener) Start() error {
+	// Check if handlers are properly initialized
+	if l.httpHandler == nil && l.tcpHandler == nil {
+		xlog.Errorf("CRITICAL: No handlers available. Check business config in Redis.")
+		return fmt.Errorf("no handlers available")
+	}
+
+	if l.address == "" {
+		xlog.Errorf("CRITICAL: server.listen_addr is not configured")
+		return fmt.Errorf("listen address not configured")
+	}
+
 	var err error
 	l.listener, err = net.Listen("tcp", l.address)
 	if err != nil {
@@ -81,10 +97,20 @@ func (l *Listener) handleConn(c net.Conn) {
 	// 3. Dispatch
 	switch proto {
 	case ProtocolHTTP:
+		if l.httpHandler == nil {
+			xlog.Warnf("Conn %s -> HTTP but handler not configured, closing", c.RemoteAddr())
+			c.Close()
+			return
+		}
 		xlog.Debugf("Conn %s -> HTTP", c.RemoteAddr())
 		l.httpHandler.ServeConn(sniffConn)
 
 	case ProtocolTCP:
+		if l.tcpHandler == nil {
+			xlog.Warnf("Conn %s -> TCP but handler not configured, closing", c.RemoteAddr())
+			c.Close()
+			return
+		}
 		xlog.Debugf("Conn %s -> TCP", c.RemoteAddr())
 		l.tcpHandler.Handle(sniffConn)
 

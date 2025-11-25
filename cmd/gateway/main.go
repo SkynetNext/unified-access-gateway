@@ -33,16 +33,17 @@ func main() {
 		}
 	}
 
-	// 3. Load Configuration (env vars or ConfigMap)
+	// 3. Load Infrastructure Configuration (env vars or ConfigMap)
+	// Infrastructure config: Metrics, Redis connection settings
 	cfg := config.LoadConfig()
 	if discovery.IsRunningInK8s() {
-		// Try to load from ConfigMap first
+		// Try to load infrastructure config from ConfigMap
 		if cmCfg := config.LoadConfigFromConfigMap(); cmCfg != nil {
 			cfg = cmCfg
-			xlog.Infof("Config loaded from ConfigMap")
+			xlog.Infof("Infrastructure config loaded from ConfigMap")
 		}
 	}
-	xlog.Infof("Config loaded: listen=%s, metrics=%s", cfg.Server.ListenAddr, cfg.Metrics.ListenAddr)
+	xlog.Infof("Infrastructure config loaded: metrics=%s, redis=%v", cfg.Metrics.ListenAddr, cfg.Security.Redis.Enabled)
 
 	// 4. Initialize Service Discovery (K8s DNS)
 	svcDiscovery := discovery.NewK8sServiceDiscovery()
@@ -64,31 +65,62 @@ func main() {
 		}
 	}
 
-	// 5. Initialize Redis config store if enabled
+	// 5. Initialize Redis config store (REQUIRED for business config)
 	var redisStore *config.RedisStore
 	if cfg.Security.Redis.Enabled {
 		store, err := config.NewRedisStore(&cfg.Security.Redis)
 		if err != nil {
-			xlog.Errorf("Failed to initialize Redis config store: %v", err)
-		} else {
-			redisStore = store
+			xlog.Errorf("CRITICAL: Failed to connect to Redis: %v", err)
+			xlog.Errorf("Gateway cannot start without Redis. Business config is unavailable.")
+			os.Exit(1)
 		}
+		redisStore = store
+
+		// 6. Load Business Configuration from Redis (READ-ONLY)
+		businessCfg, err := redisStore.LoadBusinessConfig()
+		if err != nil {
+			xlog.Errorf("CRITICAL: Failed to load business config from Redis: %v", err)
+			xlog.Errorf("Gateway cannot start. Please configure business config in Redis first.")
+			os.Exit(1)
+		}
+
+		// Apply business config to main config
+		cfg.Server = businessCfg.Server
+		cfg.Backends = businessCfg.Backends
+		cfg.Lifecycle = businessCfg.Lifecycle
+		xlog.Infof("Business config loaded from Redis: listen=%s, http_backend=%s, tcp_backend=%s",
+			cfg.Server.ListenAddr, cfg.Backends.HTTP.TargetURL, cfg.Backends.TCP.TargetAddr)
+
+		// 7. Load Security Configuration from Redis (READ-ONLY)
+		securityCfg, err := redisStore.LoadSecurityConfig()
+		if err != nil {
+			xlog.Warnf("Failed to load security config from Redis: %v (using defaults)", err)
+		} else {
+			cfg.Security.Auth = securityCfg.Auth
+			cfg.Security.RateLimit = securityCfg.RateLimit
+			cfg.Security.WAF = securityCfg.WAF
+			xlog.Infof("Security config loaded from Redis: rate_limit=%v, waf=%v",
+				cfg.Security.RateLimit.Enabled, cfg.Security.WAF.Enabled)
+		}
+	} else {
+		xlog.Errorf("CRITICAL: Redis is disabled. Gateway requires Redis for business config.")
+		os.Exit(1)
 	}
 
-	// 6. Initialize Server with configuration
+	// 8. Initialize Server with configuration
 	server := core.NewServer(cfg, redisStore)
 
-	// 6. Start Server (Non-blocking)
+	// 9. Start Server (Non-blocking)
 	server.Start()
 
-	// 7. Wait for Shutdown Signal (SIGINT/SIGTERM from K8s)
+	// 10. Wait for Shutdown Signal (SIGINT/SIGTERM from K8s)
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 
 	xlog.Infof("Received signal: %v. Initiating graceful shutdown...", sig)
 
-	// 8. Execute Graceful Shutdown (Drain Mode)
+	// 11. Execute Graceful Shutdown (Drain Mode)
 	server.GracefulShutdown(cfg.Lifecycle.ShutdownTimeout)
 
 	xlog.Infof("Server exited successfully.")

@@ -1,0 +1,92 @@
+# UAG Redis - Configuration Store
+# Deployed in uag namespace for isolation
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uag-redis
+  namespace: uag
+  labels:
+    app: uag-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: uag-redis
+  template:
+    metadata:
+      labels:
+        app: uag-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          command:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --maxmemory
+            - "256mb"
+            - --maxmemory-policy
+            - "allkeys-lru"
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 3
+      volumes:
+        - name: redis-data
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: uag-redis
+  namespace: uag
+  labels:
+    app: uag-redis
+spec:
+  type: ClusterIP
+  selector:
+    app: uag-redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+
+---
+# Optional: Redis with persistence (PVC)
+# Uncomment if you need persistent storage
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: uag-redis-pvc
+#   namespace: uag
+# spec:
+#   accessModes:
+#   - ReadWriteOnce
+#   resources:
+#     requests:
+#       storage: 1Gi
+

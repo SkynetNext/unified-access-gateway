@@ -1,7 +1,6 @@
 package security
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -44,17 +43,15 @@ func NewManager(cfg *config.Config, store *config.RedisStore) *Manager {
 
 	m.loadStaticConfig()
 
+	// Load security config from Redis (READ-ONLY, no sync back)
 	if store != nil {
-		if snapshot, err := store.LoadAllFromRedis(); err == nil && snapshot != nil {
+		if snapshot, err := store.LoadSecurityConfig(); err == nil && snapshot != nil {
 			m.applySnapshot(snapshot)
-			xlog.Infof("Loaded security configuration from Redis")
+			xlog.Infof("Loaded security configuration from Redis (READ-ONLY)")
 		} else if err != nil {
-			xlog.Warnf("Failed to load security config from Redis: %v", err)
-		} else if err := store.SyncToRedis(&cfg.Security); err != nil {
-			xlog.Warnf("Failed to sync initial security config to Redis: %v", err)
-		} else {
-			xlog.Infof("Seeded Redis with current security configuration")
+			xlog.Warnf("Failed to load security config from Redis: %v (using defaults)", err)
 		}
+		// Listen for config updates via pub/sub
 		go m.consumeRedisUpdates()
 	}
 
@@ -129,45 +126,14 @@ func (m *Manager) consumeRedisUpdates() {
 		return
 	}
 	for update := range ch {
-		switch update.Type {
-		case "rate_limit":
-			var payload struct {
-				Enabled bool    `json:"enabled"`
-				RPS     float64 `json:"rps"`
-				Burst   int     `json:"burst"`
-			}
-			if err := json.Unmarshal(update.Data, &payload); err != nil {
-				xlog.Warnf("Invalid rate limit update payload: %v", err)
-				continue
-			}
-			if payload.Enabled && payload.RPS > 0 {
-				m.UpdateRateLimit(payload.RPS, payload.Burst)
-			} else {
-				m.DisableRateLimit()
-			}
-		case "waf_ips":
-			ips, err := m.redisStore.GetBlockedIPs()
-			if err != nil {
-				xlog.Warnf("Failed to fetch WAF IPs from Redis: %v", err)
-				continue
-			}
-			m.UpdateBlockedIPs(ips)
-		case "waf_patterns":
-			patterns, err := m.redisStore.GetBlockedPatterns()
-			if err != nil {
-				xlog.Warnf("Failed to fetch WAF patterns from Redis: %v", err)
-				continue
-			}
-			m.UpdateBlockedPatterns(patterns)
-		case "auth_subjects":
-			subjects, err := m.redisStore.GetAllowedSubjects()
-			if err != nil {
-				xlog.Warnf("Failed to fetch auth subjects from Redis: %v", err)
-				continue
-			}
-			m.UpdateAllowedSubjects(subjects)
-		default:
-			xlog.Warnf("Unknown Redis config update type: %s", update.Type)
+		xlog.Infof("Received config update from Redis: type=%s", update.Type)
+		// Reload all security config from Redis on any change
+		// This is simpler and ensures consistency
+		if snapshot, err := m.redisStore.LoadSecurityConfig(); err == nil && snapshot != nil {
+			m.applySnapshot(snapshot)
+			xlog.Infof("Reloaded security configuration from Redis")
+		} else if err != nil {
+			xlog.Warnf("Failed to reload security config from Redis: %v", err)
 		}
 	}
 }

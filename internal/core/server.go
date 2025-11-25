@@ -6,7 +6,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/SkynetNext/unified-access-gateway/internal/api"
 	"github.com/SkynetNext/unified-access-gateway/internal/config"
 	"github.com/SkynetNext/unified-access-gateway/internal/security"
 	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
@@ -42,10 +41,6 @@ func (s *Server) Start() {
 			mux.Handle("/metrics", promhttp.Handler())
 			mux.HandleFunc("/health", s.healthHandler)
 			mux.HandleFunc("/ready", s.readyHandler) // K8s Readiness Probe
-
-			// Register Admin API (Control Plane)
-			adminAPI := api.NewAdminAPI(s.cfg, s.security, s.redisStore)
-			adminAPI.RegisterRoutes(mux)
 
 			xlog.Infof("Metrics server listening on %s", s.cfg.Metrics.ListenAddr)
 			if err := http.ListenAndServe(s.cfg.Metrics.ListenAddr, mux); err != nil {
@@ -101,13 +96,26 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // readyHandler for K8s Readiness Probe
+// Returns 503 if:
+// 1. Gateway is in drain mode (shutting down)
+// 2. Redis is enabled but unavailable (business config cannot be loaded)
 func (s *Server) readyHandler(w http.ResponseWriter, r *http.Request) {
+	// Check 1: Drain mode
 	if atomic.LoadInt32(&s.draining) == 1 {
-		// In drain mode, return 503 to signal K8s to stop sending traffic
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte("Draining"))
 		return
 	}
+
+	// Check 2: Redis health (if enabled)
+	if s.cfg.Security.Redis.Enabled && s.redisStore != nil {
+		if err := s.redisStore.CheckHealth(); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("Redis Unavailable: " + err.Error()))
+			return
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Ready"))
 }
