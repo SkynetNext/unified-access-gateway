@@ -113,6 +113,10 @@ spec:
             - name: bpf-maps
               mountPath: /sys/fs/bpf
               mountPropagation: HostToContainer
+            - name: host-proc-sys-net
+              mountPath: /host/proc/sys/net
+            - name: host-proc-sys-kernel
+              mountPath: /host/proc/sys/kernel
 
           env:
             # Infrastructure Configuration
@@ -170,6 +174,14 @@ spec:
           hostPath:
             path: /sys/fs/bpf
             type: DirectoryOrCreate
+        - name: host-proc-sys-net
+          hostPath:
+            path: /proc/sys/net
+            type: Directory
+        - name: host-proc-sys-kernel
+          hostPath:
+            path: /proc/sys/kernel
+            type: Directory
 
 ---
 apiVersion: v1
