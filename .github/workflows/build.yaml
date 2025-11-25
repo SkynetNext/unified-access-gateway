@@ -15,23 +15,24 @@ env:
 jobs:
     build:
         name: Build Go Binary
-        runs-on: windows-latest
+        runs-on: ubuntu-latest
 
         steps:
             - name: Checkout code
               uses: actions/checkout@v4
 
             - name: Show repository structure
-              shell: pwsh
               run: |
-                  Write-Host "==> Repository root:"
-                  Get-ChildItem
+                  echo "==> Repository root:"
+                  ls -la
 
-                  Write-Host "`n==> Deploy directory:"
-                  if (Test-Path deploy) { Get-ChildItem deploy } else { Write-Host "deploy/ not found" }
+                  echo ""
+                  echo "==> Deploy directory:"
+                  ls -la deploy/ || echo "deploy/ directory not found!"
 
-                  Write-Host "`n==> pkg/ebpf directory:"
-                  if (Test-Path pkg/ebpf) { Get-ChildItem pkg/ebpf } else { Write-Host "pkg/ebpf/ not found" }
+                  echo ""
+                  echo "==> pkg/ebpf directory:"
+                  ls -la pkg/ebpf/ || echo "pkg/ebpf/ directory not found!"
 
             - name: Set up Go
               uses: actions/setup-go@v5
@@ -43,18 +44,16 @@ jobs:
                   go mod download
                   go mod verify
 
-            - name: Cross-compile for Linux (uses stub, no eBPF)
-              shell: pwsh
+            - name: Build (Linux, uses linux_stub.go, no eBPF)
               run: |
-                  Write-Host "==> Cross-compiling for Linux amd64..."
-                  Write-Host "Note: On Windows, stub.go will be used (no eBPF support)"
-                  $env:CGO_ENABLED="0"
-                  $env:GOOS="linux"
-                  $env:GOARCH="amd64"
-                  go build -ldflags="-s -w" -o uag ./cmd/gateway
+                  echo "==> Building Go binary (Linux amd64, no eBPF)..."
+                  echo "Note: Using linux_stub.go (eBPF disabled)"
+                  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o uag ./cmd/gateway
 
-                  Write-Host "`n==> Build result:"
-                  Get-ChildItem uag
+                  echo ""
+                  echo "==> Build result:"
+                  ls -lh uag
+                  file uag
 
             - name: Upload binary artifact
               uses: actions/upload-artifact@v4
@@ -113,7 +112,8 @@ jobs:
 
             - name: Build with eBPF
               run: |
-                  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o uag-ebpf ./cmd/gateway
+                  echo "==> Building with eBPF support (using -tags ebpf)..."
+                  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags ebpf -ldflags="-s -w" -o uag-ebpf ./cmd/gateway
                   ls -lh uag-ebpf
               continue-on-error: true
 
