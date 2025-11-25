@@ -1,0 +1,96 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: uag-redis-init
+  namespace: uag
+  labels:
+    app: uag
+    component: redis-init
+spec:
+  ttlSecondsAfterFinished: 300 # Auto-delete after 5 minutes
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: uag
+        component: redis-init
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: redis-init
+          image: redis:7-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              REDIS_HOST="${REDIS_HOST:-10.1.0.8}"
+              REDIS_PORT="${REDIS_PORT:-6379}"
+              REDIS_PREFIX="${REDIS_PREFIX:-uag:}"
+
+              # Redis CLI command
+              if [ -n "$REDIS_PASSWORD" ]; then
+                REDIS_CLI="redis-cli -h $REDIS_HOST -p $REDIS_PORT -a $REDIS_PASSWORD"
+              else
+                REDIS_CLI="redis-cli -h $REDIS_HOST -p $REDIS_PORT"
+              fi
+
+              echo "==> Initializing Gateway Business Configuration"
+              echo "Redis: $REDIS_HOST:$REDIS_PORT"
+              echo "Prefix: $REDIS_PREFIX"
+              echo ""
+
+              # Business Configuration
+              echo "==> Setting Business Config..."
+              $REDIS_CLI HSET "${REDIS_PREFIX}business:config" \
+                "server.listen_addr" ":8080" \
+                "server.max_connections" "10000" \
+                "backends.http.target_url" "http://httpproxy-service.hgame.svc.cluster.local:5000" \
+                "backends.http.timeout" "30s" \
+                "backends.tcp.target_addr" "gateserver-service.hgame.svc.cluster.local:6000" \
+                "backends.tcp.timeout" "60s" \
+                "lifecycle.shutdown_timeout" "60s" \
+                "lifecycle.drain_wait_time" "3600s"
+
+              echo "✅ Business config set"
+
+              # Rate limit config
+              echo "==> Setting Rate Limit Config..."
+              $REDIS_CLI HSET "${REDIS_PREFIX}rate_limit" \
+                "enabled" "true" \
+                "rps" "1000" \
+                "burst" "2000"
+
+              # WAF config
+              echo "==> Setting WAF Config..."
+              $REDIS_CLI HSET "${REDIS_PREFIX}waf:config" \
+                "enabled" "true"
+
+              $REDIS_CLI SADD "${REDIS_PREFIX}waf:blocked_patterns" \
+                "(?i)(union.*select)" \
+                "(?i)(insert.*into)" \
+                "(?i)(<script>)"
+
+              echo "✅ Security config set"
+
+              # Verify
+              echo ""
+              echo "==> Verifying Configuration..."
+              $REDIS_CLI HGETALL "${REDIS_PREFIX}business:config"
+
+              echo ""
+              echo "✅ Gateway configuration initialized successfully!"
+          env:
+            - name: REDIS_HOST
+              value: "10.1.0.8" # Will be overridden by sed
+            - name: REDIS_PORT
+              value: "6379" # Will be overridden by sed
+            - name: REDIS_PREFIX
+              value: "uag:"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: uag-secrets
+                  key: redis-password
+                  optional: true
