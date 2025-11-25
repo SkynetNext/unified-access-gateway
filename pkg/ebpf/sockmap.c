@@ -12,11 +12,12 @@
 // Map to store socket file descriptors
 // Key: socket cookie (unique identifier)
 // Value: socket fd
+// Using key_size/value_size instead of __type() to avoid BTF requirements
 struct {
   __uint(type, BPF_MAP_TYPE_SOCKHASH);
   __uint(max_entries, 65535);
-  __type(key, __u64);   // socket cookie
-  __type(value, __u64); // socket fd
+  __uint(key_size, sizeof(__u64));   // socket cookie
+  __uint(value_size, sizeof(__u64)); // socket fd
 } sock_map SEC(".maps");
 
 // Map to store socket pair relationships
@@ -25,8 +26,8 @@ struct {
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, 65535);
-  __type(key, __u64);
-  __type(value, __u64);
+  __uint(key_size, sizeof(__u64));
+  __uint(value_size, sizeof(__u64));
 } sock_pair_map SEC(".maps");
 
 // Parser program: extract socket key (cookie)

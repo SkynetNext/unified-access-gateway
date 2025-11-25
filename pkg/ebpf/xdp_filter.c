@@ -58,11 +58,12 @@ struct tcphdr {
 // Map: IP blacklist (for DDoS protection)
 // Key: IPv4 address (__u32)
 // Value: 1 (blocked)
+// Using key_size/value_size instead of __type() to avoid BTF requirements
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, 10000);
-  __type(key, __u32);
-  __type(value, __u8);
+  __uint(key_size, sizeof(__u32));
+  __uint(value_size, sizeof(__u8));
 } ip_blacklist SEC(".maps");
 
 // Map: Rate limiting per source IP
@@ -71,16 +72,16 @@ struct {
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, 65536);
-  __type(key, __u32);
-  __type(value, __u64);
+  __uint(key_size, sizeof(__u32));
+  __uint(value_size, sizeof(__u64));
 } rate_limit_map SEC(".maps");
 
 // Map: Statistics
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
   __uint(max_entries, 10);
-  __type(key, __u32);
-  __type(value, __u64);
+  __uint(key_size, sizeof(__u32));
+  __uint(value_size, sizeof(__u64));
 } stats_map SEC(".maps");
 
 // Statistics indices
@@ -96,8 +97,8 @@ struct {
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
   __uint(max_entries, 1);
-  __type(key, __u32);
-  __type(value, __u64);
+  __uint(key_size, sizeof(__u32));
+  __uint(value_size, sizeof(__u64));
 } config_map SEC(".maps");
 
 #define RATE_LIMIT_THRESHOLD 1000 // Max packets per IP per second
