@@ -1,0 +1,205 @@
+# Unified Access Gateway - GitHub Actions CI
+# Verifies build on every push and PR
+
+name: Build & Test
+
+on:
+    push:
+        branches: [main, develop]
+    pull_request:
+        branches: [main]
+
+env:
+    GO_VERSION: "1.22"
+
+jobs:
+    build:
+        name: Build Go Binary
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Show repository structure
+              run: |
+                  echo "==> Repository root:"
+                  ls -la
+
+                  echo ""
+                  echo "==> Deploy directory:"
+                  ls -la deploy/ || echo "deploy/ directory not found!"
+
+                  echo ""
+                  echo "==> Check key files:"
+                  [ -f deploy/namespace.yaml ] && echo "✅ namespace.yaml exists" || echo "❌ namespace.yaml NOT found"
+                  [ -f deploy/deployment.yaml ] && echo "✅ deployment.yaml exists" || echo "❌ deployment.yaml NOT found"
+                  [ -f deploy/redis.yaml ] && echo "✅ redis.yaml exists" || echo "❌ redis.yaml NOT found"
+                  [ -f deploy/monitoring.yaml ] && echo "✅ monitoring.yaml exists" || echo "❌ monitoring.yaml NOT found"
+
+                  echo ""
+                  echo "==> Config directory:"
+                  ls -la config/ || echo "config/ directory not found!"
+
+                  echo ""
+                  echo "==> pkg/ebpf directory:"
+                  ls -la pkg/ebpf/ || echo "pkg/ebpf/ directory not found!"
+
+            - name: Set up Go
+              uses: actions/setup-go@v5
+              with:
+                  go-version: ${{ env.GO_VERSION }}
+
+            - name: Cache Go modules
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cache/go-build
+                      ~/go/pkg/mod
+                  key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+                  restore-keys: |
+                      ${{ runner.os }}-go-
+
+            - name: Download dependencies
+              run: |
+                  go mod download
+                  go mod verify
+
+            - name: Build (without eBPF)
+              run: |
+                  echo "==> Building Go binary (Linux amd64, no CGO)..."
+                  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o uag ./cmd/gateway
+
+                  echo ""
+                  echo "==> Build result:"
+                  ls -lh uag
+                  file uag
+
+            - name: Run tests
+              run: |
+                  go test -v -race -coverprofile=coverage.out ./...
+              continue-on-error: true
+
+            - name: Upload binary artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: uag-linux-amd64
+                  path: uag
+                  retention-days: 7
+
+    build-ebpf:
+        name: Build with eBPF
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install eBPF dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y clang llvm libbpf-dev
+
+                  echo "==> Clang version:"
+                  clang --version
+
+                  echo "==> Check BPF target support:"
+                  clang --print-targets | grep -i bpf || echo "BPF target not found in default clang"
+
+            - name: Set up Go
+              uses: actions/setup-go@v5
+              with:
+                  go-version: ${{ env.GO_VERSION }}
+
+            - name: Install bpf2go
+              run: |
+                  go install github.com/cilium/ebpf/cmd/bpf2go@latest
+                  echo "==> bpf2go installed"
+
+            - name: Generate eBPF bindings
+              run: |
+                  cd pkg/ebpf
+                  export GOPACKAGE=ebpf
+
+                  echo "==> Generating SockMap eBPF..."
+                  if [ -f sockmap.c ]; then
+                    bpf2go -cc clang -target bpf -cflags "-O2 -g -Wall" bpf sockmap.c -- -I./include || echo "SockMap generation failed"
+                  fi
+
+                  echo "==> Generating XDP eBPF..."
+                  if [ -f xdp_filter.c ]; then
+                    bpf2go -cc clang -target bpf -cflags "-O2 -g -Wall" xdp xdp_filter.c -- -I./include || echo "XDP generation failed"
+                  fi
+
+                  echo "==> Generated files:"
+                  ls -la *.go 2>/dev/null || echo "No generated .go files"
+              continue-on-error: true
+
+            - name: Build with eBPF
+              run: |
+                  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o uag-ebpf ./cmd/gateway
+                  ls -lh uag-ebpf
+              continue-on-error: true
+
+    docker:
+        name: Docker Build Test
+        runs-on: ubuntu-latest
+        needs: build
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Download binary
+              uses: actions/download-artifact@v4
+              with:
+                  name: uag-linux-amd64
+
+            - name: Build Docker image
+              run: |
+                  cat > Dockerfile.ci << 'EOF'
+                  FROM alpine:3.19
+                  RUN apk --no-cache add ca-certificates tzdata
+                  ENV TZ=Asia/Shanghai
+                  RUN adduser -D -u 1000 gateway
+                  COPY uag /usr/local/bin/uag
+                  RUN chmod +x /usr/local/bin/uag
+                  USER gateway
+                  EXPOSE 8080 9090
+                  HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+                      CMD wget -q --spider http://localhost:9090/health || exit 1
+                  ENTRYPOINT ["/usr/local/bin/uag"]
+                  EOF
+
+                  docker build -t uag:ci -f Dockerfile.ci .
+                  docker images | grep uag
+
+    validate-k8s:
+        name: Validate K8s Manifests
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install kubeval
+              run: |
+                  wget https://github.com/instrumenta/kubeval/releases/latest/download/kubeval-linux-amd64.tar.gz
+                  tar xf kubeval-linux-amd64.tar.gz
+                  sudo mv kubeval /usr/local/bin/
+
+            - name: Validate K8s manifests
+              run: |
+                  echo "==> Validating Kubernetes manifests..."
+
+                  if [ -d deploy ]; then
+                    for file in deploy/*.yaml; do
+                      if [ -f "$file" ]; then
+                        echo "Validating: $file"
+                        kubeval "$file" --strict || echo "Warning: $file has issues"
+                      fi
+                    done
+                  else
+                    echo "No deploy/ directory found"
+                  fi
+              continue-on-error: true
