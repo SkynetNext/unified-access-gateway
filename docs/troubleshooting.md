@@ -69,33 +69,54 @@ curl http://localhost:9090/ready
 
 **Symptoms**:
 ```
-[INFO] eBPF not available, using userspace proxy
+[INFO] eBPF not supported on this system (insufficient permissions or MEMLOCK limit too low)
+[DEBUG] eBPF map creation test failed: operation not permitted (MEMLOCK may be too low)
 ```
 
 **Causes**:
-- Kernel < 4.18
-- Missing capabilities
-- Cgroup v2 not mounted
+- Missing `CAP_BPF` or `CAP_SYS_ADMIN` capability
+- MEMLOCK limit too low
+- Kernel < 4.18 (rare)
+- eBPF programs not compiled (missing `bpf_bpfel.go`)
 
 **Solutions**:
-1. Check kernel version:
+
+1. **Add capabilities in Kubernetes** (recommended):
+   ```yaml
+   securityContext:
+     capabilities:
+       add:
+         - BPF
+         - NET_ADMIN
+   ```
+   See `deploy/deployment.yaml` for example.
+
+2. **Increase MEMLOCK limit** (if running outside K8s):
+   ```bash
+   # Check current limit
+   ulimit -l
+   
+   # Increase limit (temporary)
+   ulimit -l unlimited
+   
+   # Or in /etc/security/limits.conf (permanent)
+   * soft memlock unlimited
+   * hard memlock unlimited
+   ```
+
+3. **Check kernel version**:
    ```bash
    uname -r
-   # Requires 4.18+
+   # Requires 4.18+ for SockMap
    ```
 
-2. Check capabilities:
+4. **Verify eBPF programs compiled**:
    ```bash
-   kubectl describe pod <pod-name> -n uag | grep -i capability
-   # Should include CAP_BPF
+   ls -la unified-access-gateway/pkg/ebpf/bpf_bpfel.go
+   # If missing, run: make generate-ebpf
    ```
 
-3. Verify cgroup v2:
-   ```bash
-   mount | grep cgroup2
-   ```
-
-**Note**: Gateway works fine without eBPF. It's an optimization, not a requirement.
+**Note**: Gateway works fine without eBPF. It's an optimization, not a requirement. The error is informational.
 
 ### High latency
 

@@ -40,6 +40,15 @@ spec:
           image: 14.103.46.72/uag/unified-access-gateway:latest
           imagePullPolicy: Always
 
+          # eBPF requires CAP_BPF and CAP_SYS_ADMIN capabilities
+          # Note: eBPF is optional, gateway works fine without it
+          securityContext:
+            capabilities:
+              add:
+                - BPF
+                - NET_ADMIN
+              # drop: []  # Keep default capabilities
+
           ports:
             - name: business
               containerPort: 8080

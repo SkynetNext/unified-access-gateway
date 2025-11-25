@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
-	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 )
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror -D__TARGET_ARCH_x86_64" bpf sockmap.c
@@ -24,16 +24,17 @@ const SO_COOKIE = 57
 
 // SockMapManager manages eBPF sockmap for socket redirection
 type SockMapManager struct {
-	objs      *bpfObjects
+	objs       *bpfObjects
 	cgroupLink link.Link
-	enabled   bool
+	enabled    bool
 }
 
 // NewSockMapManager creates a new sockmap manager
 func NewSockMapManager() (*SockMapManager, error) {
 	// Check if eBPF is supported
 	if !isEBPFSupported() {
-		xlog.Infof("eBPF not supported on this system (kernel may lack eBPF support or insufficient permissions), falling back to userspace proxy")
+		xlog.Infof("eBPF not supported on this system (insufficient permissions or MEMLOCK limit too low), falling back to userspace proxy")
+		xlog.Infof("To enable eBPF: run with CAP_BPF capability or as root, and ensure MEMLOCK limit is sufficient")
 		return &SockMapManager{enabled: false}, nil
 	}
 
@@ -94,9 +95,9 @@ func findCgroupPath() string {
 
 	// Fallback: try common paths
 	paths := []string{
-		"/sys/fs/cgroup",           // cgroup v2 root (K8s with systemd, unified)
-		"/sys/fs/cgroup/unified",  // cgroup v2 unified (if separate mount)
-		"/sys/fs/cgroup/systemd",   // systemd slice (cgroup v1, K8s with systemd)
+		"/sys/fs/cgroup",         // cgroup v2 root (K8s with systemd, unified)
+		"/sys/fs/cgroup/unified", // cgroup v2 unified (if separate mount)
+		"/sys/fs/cgroup/systemd", // systemd slice (cgroup v1, K8s with systemd)
 	}
 
 	for _, path := range paths {
@@ -276,7 +277,14 @@ func isEBPFSupported() bool {
 
 	m, err := ebpf.NewMap(spec)
 	if err != nil {
-		xlog.Debugf("eBPF map creation test failed: %v", err)
+		errStr := err.Error()
+		if strings.Contains(errStr, "operation not permitted") {
+			xlog.Debugf("eBPF map creation failed: %v", err)
+			xlog.Debugf("Hint: Need CAP_BPF or CAP_SYS_ADMIN capability, or run as root")
+			xlog.Debugf("Hint: If MEMLOCK error, increase limit: ulimit -l unlimited")
+		} else {
+			xlog.Debugf("eBPF map creation test failed: %v", err)
+		}
 		return false
 	}
 	m.Close()
