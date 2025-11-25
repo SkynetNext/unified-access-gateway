@@ -10,14 +10,14 @@
 #include "include/linux/types.h"
 
 // Map to store socket file descriptors
-// Key: socket cookie - using __u32 instead of __u64 for SOCKHASH compatibility
-// Value: socket reference (SOCKHASH stores socket, not fd)
-// Note: Some kernels require key_size=4 for SOCKHASH
+// Following kernel documentation:
+// https://www.kernel.org/doc/Documentation/bpf/map_sockmap.rst Key: __u32
+// (socket identifier) Value: __u64 (socket cookie for userspace)
 struct {
   __uint(type, BPF_MAP_TYPE_SOCKHASH);
   __uint(max_entries, 65535);
-  __uint(key_size, 4);   // Try 4 bytes (some kernels require this)
-  __uint(value_size, 4); // Must be 4 bytes for SOCKHASH
+  __type(key, __u32);   // Official example uses __u32
+  __type(value, __u64); // Official example uses __u64
 } sock_map SEC(".maps");
 
 // Map to store socket pair relationships
@@ -26,8 +26,8 @@ struct {
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, 65535);
-  __uint(key_size, 4);   // Match sock_map key size
-  __uint(value_size, 4); // Match sock_map key size
+  __type(key, __u32);   // Match sock_map key type
+  __type(value, __u32); // Match sock_map key type
 } sock_pair_map SEC(".maps");
 
 // Parser program: extract socket key (cookie)
