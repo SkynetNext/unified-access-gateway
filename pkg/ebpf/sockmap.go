@@ -18,7 +18,7 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror -D__TARGET_ARCH_x86_64" bpf sockmap.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target bpf -cflags "-O2 -g -Wall -Werror -D__TARGET_ARCH_x86_64" bpf sockmap.c -- -I./include
 
 // SO_COOKIE socket option (Linux-specific)
 const SO_COOKIE = 57
@@ -44,11 +44,31 @@ func NewSockMapManager() (*SockMapManager, error) {
 		return &SockMapManager{enabled: false}, nil
 	}
 
+	// Check BTF support (required for some eBPF map types)
+	if _, err := os.Stat("/sys/kernel/btf/vmlinux"); err != nil {
+		xlog.Warnf("BTF not available on this kernel (check /sys/kernel/btf/vmlinux): %v", err)
+		xlog.Infof("eBPF SockMap requires BTF support. Falling back to userspace proxy.")
+		return &SockMapManager{enabled: false}, nil
+	}
+
 	// Load pre-compiled eBPF objects
+	// Try to load with BTF support
+	opts := &ebpf.CollectionOptions{
+		Programs: ebpf.ProgramOptions{
+			// Kernel BTF will be used automatically if available
+		},
+	}
 	objs := &bpfObjects{}
-	if err := loadBpfObjects(objs, nil); err != nil {
-		xlog.Warnf("Failed to load eBPF objects (eBPF programs may not be compiled): %v", err)
-		xlog.Infof("Falling back to userspace proxy. To enable eBPF, run: make generate-ebpf")
+	if err := loadBpfObjects(objs, opts); err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "BTF") || strings.Contains(errMsg, "btf") {
+			xlog.Warnf("Failed to load eBPF objects (BTF issue): %v", err)
+			xlog.Infof("eBPF requires BTF support. Check: ls -la /sys/kernel/btf/vmlinux")
+			xlog.Infof("Falling back to userspace proxy.")
+		} else {
+			xlog.Warnf("Failed to load eBPF objects: %v", err)
+			xlog.Infof("Falling back to userspace proxy. To enable eBPF, run: make generate-ebpf")
+		}
 		return &SockMapManager{enabled: false}, nil
 	}
 

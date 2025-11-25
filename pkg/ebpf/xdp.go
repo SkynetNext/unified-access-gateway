@@ -8,12 +8,12 @@ import (
 	"net"
 	"os"
 
+	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
-	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror -D__TARGET_ARCH_x86_64" xdp xdp_filter.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target bpf -cflags "-O2 -g -Wall -Werror -D__TARGET_ARCH_x86_64" xdp xdp_filter.c -- -I./include
 
 // XDPManager manages XDP programs for early packet filtering
 type XDPManager struct {
@@ -24,13 +24,13 @@ type XDPManager struct {
 
 // XDPStats represents XDP statistics
 type XDPStats struct {
-	TotalPackets      uint64
-	DroppedBlacklist  uint64
-	DroppedRateLimit  uint64
-	DroppedInvalid    uint64
-	Passed            uint64
-	TCPSyn            uint64
-	TCPSynFlood       uint64
+	TotalPackets     uint64
+	DroppedBlacklist uint64
+	DroppedRateLimit uint64
+	DroppedInvalid   uint64
+	Passed           uint64
+	TCPSyn           uint64
+	TCPSynFlood      uint64
 }
 
 // NewXDPManager creates a new XDP manager
@@ -249,5 +249,3 @@ func isXDPSupported() bool {
 
 	return true
 }
-
-
