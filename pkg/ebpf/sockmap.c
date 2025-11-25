@@ -60,7 +60,6 @@ SEC("sockops")
 int sock_ops_handler(struct bpf_sock_ops *skops) {
   __u32 op = skops->op;
   __u64 cookie;
-  int ret;
 
   switch (op) {
   case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
@@ -74,7 +73,7 @@ int sock_ops_handler(struct bpf_sock_ops *skops) {
     cookie = bpf_get_socket_cookie_ops(skops);
 
     // Add socket to sockmap
-    ret = bpf_sock_hash_update(skops, &sock_map, &cookie, BPF_NOEXIST);
+    bpf_sock_hash_update(skops, &sock_map, &cookie, BPF_NOEXIST);
     break;
 
   case BPF_SOCK_OPS_STATE_CB:
