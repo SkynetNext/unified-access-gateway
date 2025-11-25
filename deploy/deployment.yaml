@@ -32,6 +32,8 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       terminationGracePeriodSeconds: 3600
+      imagePullSecrets:
+        - name: harbor-credential
 
       containers:
         - name: gateway
