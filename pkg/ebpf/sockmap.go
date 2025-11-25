@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -60,15 +61,59 @@ func NewSockMapManager() (*SockMapManager, error) {
 	}
 	objs := &bpfObjects{}
 	if err := loadBpfObjects(objs, opts); err != nil {
+		// Extract detailed error information
 		errMsg := err.Error()
-		if strings.Contains(errMsg, "BTF") || strings.Contains(errMsg, "btf") {
-			xlog.Warnf("Failed to load eBPF objects (BTF issue): %v", err)
+
+		// Log full error with context
+		xlog.Warnf("Failed to load eBPF objects: %v", err)
+
+		// Try to extract error code and map name from error message
+		// Error format: "field SockOpsHandler: program sock_ops_handler: map sock_map: map create: invalid argument"
+		if strings.Contains(errMsg, "map create") {
+			// Extract map name
+			mapName := "unknown"
+			if strings.Contains(errMsg, "sock_map") {
+				mapName = "sock_map (BPF_MAP_TYPE_SOCKHASH)"
+			} else if strings.Contains(errMsg, "sock_pair_map") {
+				mapName = "sock_pair_map (BPF_MAP_TYPE_HASH)"
+			}
+
+			// Extract error type
+			errorType := "unknown"
+			if strings.Contains(errMsg, "invalid argument") {
+				errorType = "EINVAL (Invalid argument)"
+			} else if strings.Contains(errMsg, "operation not permitted") {
+				errorType = "EPERM (Operation not permitted)"
+			} else if strings.Contains(errMsg, "no such file") {
+				errorType = "ENOENT (No such file)"
+			}
+
+			xlog.Warnf("eBPF Map Creation Failed:")
+			xlog.Warnf("  Map: %s", mapName)
+			xlog.Warnf("  Error: %s", errorType)
+			xlog.Warnf("  Full error: %s", errMsg)
+
+			// Provide specific troubleshooting hints
+			if strings.Contains(errMsg, "sock_map") && strings.Contains(errMsg, "invalid argument") {
+				xlog.Warnf("Troubleshooting:")
+				xlog.Warnf("  1. Check kernel version: uname -r (need >= 4.18 for SOCKHASH)")
+				xlog.Warnf("  2. Check kernel config: grep CONFIG_BPF_STREAM_PARSER /boot/config-$(uname -r)")
+				xlog.Warnf("  3. Check kernel logs: dmesg | grep -i bpf | tail -20")
+				xlog.Warnf("  4. SOCKHASH may require specific key/value sizes - check kernel docs")
+			}
+		} else if strings.Contains(errMsg, "BTF") || strings.Contains(errMsg, "btf") {
+			xlog.Warnf("eBPF BTF issue detected")
 			xlog.Infof("eBPF requires BTF support. Check: ls -la /sys/kernel/btf/vmlinux")
-			xlog.Infof("Falling back to userspace proxy.")
 		} else {
-			xlog.Warnf("Failed to load eBPF objects: %v", err)
-			xlog.Infof("Falling back to userspace proxy. To enable eBPF, run: make generate-ebpf")
+			xlog.Warnf("eBPF loading failed with unknown error")
 		}
+
+		// Try to read kernel logs for more details
+		if kernelLogs := readKernelLogs(); kernelLogs != "" {
+			xlog.Debugf("Recent kernel logs (dmesg):\n%s", kernelLogs)
+		}
+
+		xlog.Infof("Falling back to userspace proxy.")
 		return &SockMapManager{enabled: false}, nil
 	}
 
@@ -79,6 +124,33 @@ func NewSockMapManager() (*SockMapManager, error) {
 
 	xlog.Infof("eBPF SockMap loaded successfully")
 	return mgr, nil
+}
+
+// readKernelLogs reads recent kernel logs related to BPF
+func readKernelLogs() string {
+	// Try to read dmesg (requires permissions)
+	cmd := exec.Command("dmesg")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// If dmesg fails, try reading /var/log/kern.log or /var/log/messages
+		return ""
+	}
+
+	// Filter for BPF-related messages (last 20 lines)
+	lines := strings.Split(string(output), "\n")
+	var bpfLines []string
+	for i := len(lines) - 1; i >= 0 && len(bpfLines) < 20; i-- {
+		line := strings.ToLower(lines[i])
+		if strings.Contains(line, "bpf") || strings.Contains(line, "ebpf") ||
+			strings.Contains(line, "sockmap") || strings.Contains(line, "sockhash") {
+			bpfLines = append([]string{lines[i]}, bpfLines...)
+		}
+	}
+
+	if len(bpfLines) > 0 {
+		return strings.Join(bpfLines, "\n")
+	}
+	return ""
 }
 
 // findCgroupPath attempts to find the correct cgroup path
