@@ -3,8 +3,10 @@ package observability
 import (
 	"context"
 	"net/http"
+	"os"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/jaeger"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -30,18 +32,25 @@ func InitTracing(serviceName, jaegerEndpoint string) error {
 		return err
 	}
 
-	// Create resource
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceNameKey.String(serviceName),
-			semconv.ServiceVersionKey.String("1.0.0"),
-		),
-	)
-	if err != nil {
-		return err
+	// Create resource (don't merge with Default to avoid Schema URL conflicts)
+	// Build attributes list
+	attrs := []attribute.KeyValue{
+		semconv.ServiceNameKey.String(serviceName),
+		semconv.ServiceVersionKey.String("1.0.0"),
 	}
+	
+	// Add Pod information if running in Kubernetes
+	if podName := os.Getenv("POD_NAME"); podName != "" {
+		attrs = append(attrs, semconv.ServiceInstanceIDKey.String(podName))
+	}
+	if podNamespace := os.Getenv("POD_NAMESPACE"); podNamespace != "" {
+		attrs = append(attrs, semconv.ServiceNamespaceKey.String(podNamespace))
+	}
+	
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		attrs...,
+	)
 
 	// Create tracer provider
 	tp := tracesdk.NewTracerProvider(
