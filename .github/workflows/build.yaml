@@ -13,8 +13,48 @@ env:
     GO_VERSION: "1.22"
 
 jobs:
-    build:
-        name: Build Go Binary
+    # Windows build - uses stub.go automatically
+    build-windows:
+        name: Build (Windows)
+        runs-on: windows-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Show repository structure
+              shell: pwsh
+              run: |
+                  Write-Host "==> Repository root:"
+                  Get-ChildItem
+
+                  Write-Host "`n==> Deploy directory:"
+                  if (Test-Path deploy) { Get-ChildItem deploy } else { Write-Host "deploy/ not found" }
+
+            - name: Set up Go
+              uses: actions/setup-go@v5
+              with:
+                  go-version: ${{ env.GO_VERSION }}
+
+            - name: Download dependencies
+              run: |
+                  go mod download
+                  go mod verify
+
+            - name: Build Windows binary
+              shell: pwsh
+              run: |
+                  Write-Host "==> Building Windows binary..."
+                  Write-Host "Note: Using stub.go (no eBPF on Windows)"
+                  $env:CGO_ENABLED="0"
+                  go build -ldflags="-s -w" -o uag.exe ./cmd/gateway
+
+                  Write-Host "`n==> Build result:"
+                  Get-ChildItem uag.exe
+
+    # Linux build - generates eBPF code and builds with eBPF support
+    build-linux:
+        name: Build (Linux)
         runs-on: ubuntu-latest
 
         steps:
@@ -30,56 +70,14 @@ jobs:
                   echo "==> Deploy directory:"
                   ls -la deploy/ || echo "deploy/ directory not found!"
 
-                  echo ""
-                  echo "==> pkg/ebpf directory:"
-                  ls -la pkg/ebpf/ || echo "pkg/ebpf/ directory not found!"
-
-            - name: Set up Go
-              uses: actions/setup-go@v5
-              with:
-                  go-version: ${{ env.GO_VERSION }}
-
-            - name: Download dependencies
-              run: |
-                  go mod download
-                  go mod verify
-
-            - name: Build (Linux, uses linux_stub.go, no eBPF)
-              run: |
-                  echo "==> Building Go binary (Linux amd64, no eBPF)..."
-                  echo "Note: Using linux_stub.go (eBPF disabled)"
-                  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o uag ./cmd/gateway
-
-                  echo ""
-                  echo "==> Build result:"
-                  ls -lh uag
-                  file uag
-
-            - name: Upload binary artifact
-              uses: actions/upload-artifact@v4
-              with:
-                  name: uag-linux-amd64
-                  path: uag
-                  retention-days: 7
-
-    build-ebpf:
-        name: Build with eBPF
-        runs-on: ubuntu-latest
-
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
-
             - name: Install eBPF dependencies
               run: |
                   sudo apt-get update
-                  sudo apt-get install -y clang llvm libbpf-dev
+                  sudo apt-get install -y clang-15 llvm-15 libbpf-dev
+                  sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 100
 
                   echo "==> Clang version:"
                   clang --version
-
-                  echo "==> Check BPF target support:"
-                  clang --print-targets | grep -i bpf || echo "BPF target not found in default clang"
 
             - name: Set up Go
               uses: actions/setup-go@v5
@@ -97,30 +95,41 @@ jobs:
                   export GOPACKAGE=ebpf
 
                   echo "==> Generating SockMap eBPF..."
-                  if [ -f sockmap.c ]; then
-                    bpf2go -cc clang -target bpf -cflags "-O2 -g -Wall" bpf sockmap.c -- -I./include || echo "SockMap generation failed"
-                  fi
+                  bpf2go -cc clang -target bpf -cflags "-O2 -g -Wall" bpf sockmap.c -- -I./include
 
                   echo "==> Generating XDP eBPF..."
-                  if [ -f xdp_filter.c ]; then
-                    bpf2go -cc clang -target bpf -cflags "-O2 -g -Wall" xdp xdp_filter.c -- -I./include || echo "XDP generation failed"
-                  fi
+                  bpf2go -cc clang -target bpf -cflags "-O2 -g -Wall" xdp xdp_filter.c -- -I./include
 
                   echo "==> Generated files:"
-                  ls -la *.go 2>/dev/null || echo "No generated .go files"
-              continue-on-error: true
+                  ls -la *.go
 
-            - name: Build with eBPF
+            - name: Download dependencies
               run: |
-                  echo "==> Building with eBPF support (using -tags ebpf)..."
-                  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags ebpf -ldflags="-s -w" -o uag-ebpf ./cmd/gateway
-                  ls -lh uag-ebpf
-              continue-on-error: true
+                  go mod download
+                  go mod verify
 
+            - name: Build Linux binary
+              run: |
+                  echo "==> Building Linux binary with eBPF support..."
+                  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o uag ./cmd/gateway
+
+                  echo ""
+                  echo "==> Build result:"
+                  ls -lh uag
+                  file uag
+
+            - name: Upload binary artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: uag-linux-amd64
+                  path: uag
+                  retention-days: 7
+
+    # Docker build test
     docker:
         name: Docker Build Test
         runs-on: ubuntu-latest
-        needs: build
+        needs: build-linux
 
         steps:
             - name: Checkout code
@@ -150,6 +159,7 @@ jobs:
                   docker build -t uag:ci -f Dockerfile.ci .
                   docker images | grep uag
 
+    # Validate K8s manifests
     validate-k8s:
         name: Validate K8s Manifests
         runs-on: ubuntu-latest
@@ -158,9 +168,19 @@ jobs:
             - name: Checkout code
               uses: actions/checkout@v4
 
+            - name: Check deploy files
+              run: |
+                  echo "==> Deploy directory:"
+                  ls -la deploy/ || echo "deploy/ directory not found!"
+
+                  echo ""
+                  echo "==> Check key files:"
+                  [ -f deploy/namespace.yaml ] && echo "✅ namespace.yaml exists" || echo "❌ namespace.yaml NOT found"
+                  [ -f deploy/deployment.yaml ] && echo "✅ deployment.yaml exists" || echo "❌ deployment.yaml NOT found"
+
             - name: Install kubeval
               run: |
-                  wget https://github.com/instrumenta/kubeval/releases/latest/download/kubeval-linux-amd64.tar.gz
+                  wget -q https://github.com/instrumenta/kubeval/releases/latest/download/kubeval-linux-amd64.tar.gz
                   tar xf kubeval-linux-amd64.tar.gz
                   sudo mv kubeval /usr/local/bin/
 
