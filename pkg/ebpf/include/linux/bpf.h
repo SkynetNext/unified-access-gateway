@@ -5,10 +5,34 @@
 /*
  * Minimal BPF UAPI definitions
  * Extracted from Linux kernel headers
- * Only includes what's needed for sockmap programs
+ * Includes definitions for sockmap and XDP programs
  */
 
 #include <linux/types.h>
+
+/* Compiler attributes */
+#ifndef __always_inline
+#define __always_inline __attribute__((always_inline)) inline
+#endif
+
+/* XDP action codes */
+enum xdp_action {
+  XDP_ABORTED = 0,
+  XDP_DROP,
+  XDP_PASS,
+  XDP_TX,
+  XDP_REDIRECT,
+};
+
+/* Context for XDP programs */
+struct xdp_md {
+  __u32 data;
+  __u32 data_end;
+  __u32 data_meta;
+  __u32 ingress_ifindex;
+  __u32 rx_queue_index;
+  __u32 egress_ifindex;
+};
 
 /* BPF syscall commands */
 enum bpf_cmd {
