@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -31,14 +33,16 @@ type SockMapManager struct {
 func NewSockMapManager() (*SockMapManager, error) {
 	// Check if eBPF is supported
 	if !isEBPFSupported() {
-		xlog.Infof("eBPF not supported on this system, falling back to userspace proxy")
+		xlog.Infof("eBPF not supported on this system (kernel may lack eBPF support or insufficient permissions), falling back to userspace proxy")
 		return &SockMapManager{enabled: false}, nil
 	}
 
 	// Load pre-compiled eBPF objects
 	objs := &bpfObjects{}
 	if err := loadBpfObjects(objs, nil); err != nil {
-		return nil, fmt.Errorf("loading eBPF objects: %w", err)
+		xlog.Warnf("Failed to load eBPF objects (eBPF programs may not be compiled): %v", err)
+		xlog.Infof("Falling back to userspace proxy. To enable eBPF, run: make generate-ebpf")
+		return &SockMapManager{enabled: false}, nil
 	}
 
 	mgr := &SockMapManager{
@@ -50,10 +54,76 @@ func NewSockMapManager() (*SockMapManager, error) {
 	return mgr, nil
 }
 
+// findCgroupPath attempts to find the correct cgroup path
+// In Kubernetes with systemd cgroup driver, we need to find the root cgroup
+// that matches the current process's cgroup hierarchy
+func findCgroupPath() string {
+	// Read current process cgroup to determine the hierarchy
+	// Format: <id>:<controller>:<path>
+	// Example: 0::/kubepods.slice/kubepods-burstable.slice/...
+	cgroupData, err := os.ReadFile("/proc/self/cgroup")
+	if err == nil {
+		lines := strings.Split(strings.TrimSpace(string(cgroupData)), "\n")
+		for _, line := range lines {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 3 {
+				cgroupPath := parts[2]
+				// For cgroup v2 (empty controller), path starts with /
+				// For cgroup v1 with systemd, path is like /system.slice/...
+				if strings.HasPrefix(cgroupPath, "/") {
+					// Extract root: for systemd, it's usually /sys/fs/cgroup or /sys/fs/cgroup/systemd
+					// For cgroup v2, root is /sys/fs/cgroup
+					// For cgroup v1 with systemd, root is /sys/fs/cgroup/systemd
+					if strings.Contains(cgroupPath, "kubepods") || strings.Contains(cgroupPath, "system.slice") {
+						// Kubernetes Pod: try to find root cgroup
+						// Check if cgroup v2 (unified)
+						if fd, err := syscall.Open("/sys/fs/cgroup", syscall.O_RDONLY, 0); err == nil {
+							syscall.Close(fd)
+							return "/sys/fs/cgroup"
+						}
+						// Fallback to systemd cgroup v1
+						if fd, err := syscall.Open("/sys/fs/cgroup/systemd", syscall.O_RDONLY, 0); err == nil {
+							syscall.Close(fd)
+							return "/sys/fs/cgroup/systemd"
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: try common paths
+	paths := []string{
+		"/sys/fs/cgroup",           // cgroup v2 root (K8s with systemd, unified)
+		"/sys/fs/cgroup/unified",  // cgroup v2 unified (if separate mount)
+		"/sys/fs/cgroup/systemd",   // systemd slice (cgroup v1, K8s with systemd)
+	}
+
+	for _, path := range paths {
+		fd, err := syscall.Open(path, syscall.O_RDONLY, 0)
+		if err == nil {
+			syscall.Close(fd)
+			return path
+		}
+	}
+
+	// Default fallback
+	return "/sys/fs/cgroup"
+}
+
 // AttachToCgroup attaches sockops program to cgroup
 func (m *SockMapManager) AttachToCgroup(cgroupPath string) error {
 	if !m.enabled {
 		return errors.New("eBPF not enabled")
+	}
+
+	// Auto-detect cgroup path if not specified or default path doesn't work
+	if cgroupPath == "" || cgroupPath == "/sys/fs/cgroup" {
+		detectedPath := findCgroupPath()
+		if detectedPath != cgroupPath {
+			xlog.Debugf("Auto-detected cgroup path: %s", detectedPath)
+			cgroupPath = detectedPath
+		}
 	}
 
 	// Open cgroup
@@ -206,6 +276,7 @@ func isEBPFSupported() bool {
 
 	m, err := ebpf.NewMap(spec)
 	if err != nil {
+		xlog.Debugf("eBPF map creation test failed: %v", err)
 		return false
 	}
 	m.Close()

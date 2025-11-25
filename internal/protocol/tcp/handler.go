@@ -42,9 +42,10 @@ func NewHandler(cfg *config.Config, sec *security.Manager) *Handler {
 		h.ebpfEnabled = mgr.IsEnabled()
 		if h.ebpfEnabled {
 			xlog.Infof("eBPF SockMap acceleration enabled")
-			// Try to attach to cgroup (optional)
-			if err := mgr.AttachToCgroup("/sys/fs/cgroup"); err != nil {
-				xlog.Infof("eBPF cgroup attachment failed (still using sockmap): %v", err)
+			// Try to attach to cgroup (optional, improves performance)
+			// Empty string triggers auto-detection
+			if err := mgr.AttachToCgroup(""); err != nil {
+				xlog.Infof("eBPF cgroup attachment failed (sockmap still works, but may have reduced performance): %v", err)
 			}
 		}
 	}

@@ -249,3 +249,4 @@ kubectl run -it --rm redis-test --image=redis:7-alpine -n uag -- \
   redis-cli -h 10.1.0.8 -a $REDIS_PASSWORD PING
 ```
 
+
