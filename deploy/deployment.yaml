@@ -43,6 +43,7 @@ spec:
           # eBPF requires CAP_BPF and CAP_SYS_ADMIN capabilities
           # Note: eBPF is optional, gateway works fine without it
           securityContext:
+            # privileged: true # Uncomment if capabilities are not enough (e.g. specific K8s environments)
             capabilities:
               add:
                 - BPF

@@ -15,6 +15,7 @@ import (
 	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/rlimit"
 )
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror -D__TARGET_ARCH_x86_64" bpf sockmap.c
@@ -31,6 +32,11 @@ type SockMapManager struct {
 
 // NewSockMapManager creates a new sockmap manager
 func NewSockMapManager() (*SockMapManager, error) {
+	// Allow the current process to lock memory for eBPF resources.
+	if err := rlimit.RemoveMemlock(); err != nil {
+		xlog.Warnf("Failed to remove memlock limit: %v", err)
+	}
+
 	// Check if eBPF is supported
 	if !isEBPFSupported() {
 		xlog.Infof("eBPF not supported on this system (insufficient permissions or MEMLOCK limit too low), falling back to userspace proxy")
