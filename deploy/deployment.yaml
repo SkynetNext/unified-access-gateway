@@ -40,14 +40,15 @@ spec:
           image: 14.103.46.72/uag/unified-access-gateway:latest
           imagePullPolicy: Always
 
-          # eBPF requires CAP_BPF and CAP_SYS_ADMIN capabilities
-          # Note: eBPF is optional, gateway works fine without it
+          # eBPF requires high privileges in most K8s environments
+          # Cilium and other eBPF tools typically run as privileged
           securityContext:
-            # privileged: true # Uncomment if capabilities are not enough (e.g. specific K8s environments)
+            privileged: true
             capabilities:
               add:
                 - BPF
                 - NET_ADMIN
+                - SYS_RESOURCE # Required for rlimit
               # drop: []  # Keep default capabilities
 
           ports:
