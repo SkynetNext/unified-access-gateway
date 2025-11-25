@@ -135,4 +135,14 @@ struct bpf_sock_ops {
   __u64 bytes_acked;
 };
 
+/* Socket address families (from linux/socket.h) */
+#ifndef AF_INET
+#define AF_INET 2 /* Internet IP Protocol */
+#endif
+
+/* TCP states (from linux/tcp.h) */
+#ifndef BPF_TCP_CLOSE
+#define BPF_TCP_CLOSE 7
+#endif
+
 #endif /* _UAPI__LINUX_BPF_H__ */
