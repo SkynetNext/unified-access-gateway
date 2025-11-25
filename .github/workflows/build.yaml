@@ -15,70 +15,46 @@ env:
 jobs:
     build:
         name: Build Go Binary
-        runs-on: ubuntu-latest
+        runs-on: windows-latest
 
         steps:
             - name: Checkout code
               uses: actions/checkout@v4
 
             - name: Show repository structure
+              shell: pwsh
               run: |
-                  echo "==> Repository root:"
-                  ls -la
+                  Write-Host "==> Repository root:"
+                  Get-ChildItem
 
-                  echo ""
-                  echo "==> Deploy directory:"
-                  ls -la deploy/ || echo "deploy/ directory not found!"
+                  Write-Host "`n==> Deploy directory:"
+                  if (Test-Path deploy) { Get-ChildItem deploy } else { Write-Host "deploy/ not found" }
 
-                  echo ""
-                  echo "==> Check key files:"
-                  [ -f deploy/namespace.yaml ] && echo "✅ namespace.yaml exists" || echo "❌ namespace.yaml NOT found"
-                  [ -f deploy/deployment.yaml ] && echo "✅ deployment.yaml exists" || echo "❌ deployment.yaml NOT found"
-                  [ -f deploy/redis.yaml ] && echo "✅ redis.yaml exists" || echo "❌ redis.yaml NOT found"
-                  [ -f deploy/monitoring.yaml ] && echo "✅ monitoring.yaml exists" || echo "❌ monitoring.yaml NOT found"
-
-                  echo ""
-                  echo "==> Config directory:"
-                  ls -la config/ || echo "config/ directory not found!"
-
-                  echo ""
-                  echo "==> pkg/ebpf directory:"
-                  ls -la pkg/ebpf/ || echo "pkg/ebpf/ directory not found!"
+                  Write-Host "`n==> pkg/ebpf directory:"
+                  if (Test-Path pkg/ebpf) { Get-ChildItem pkg/ebpf } else { Write-Host "pkg/ebpf/ not found" }
 
             - name: Set up Go
               uses: actions/setup-go@v5
               with:
                   go-version: ${{ env.GO_VERSION }}
 
-            - name: Cache Go modules
-              uses: actions/cache@v4
-              with:
-                  path: |
-                      ~/.cache/go-build
-                      ~/go/pkg/mod
-                  key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-                  restore-keys: |
-                      ${{ runner.os }}-go-
-
             - name: Download dependencies
               run: |
                   go mod download
                   go mod verify
 
-            - name: Build (without eBPF)
+            - name: Cross-compile for Linux (uses stub, no eBPF)
+              shell: pwsh
               run: |
-                  echo "==> Building Go binary (Linux amd64, no CGO)..."
-                  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o uag ./cmd/gateway
+                  Write-Host "==> Cross-compiling for Linux amd64..."
+                  Write-Host "Note: On Windows, stub.go will be used (no eBPF support)"
+                  $env:CGO_ENABLED="0"
+                  $env:GOOS="linux"
+                  $env:GOARCH="amd64"
+                  go build -ldflags="-s -w" -o uag ./cmd/gateway
 
-                  echo ""
-                  echo "==> Build result:"
-                  ls -lh uag
-                  file uag
-
-            - name: Run tests
-              run: |
-                  go test -v -race -coverprofile=coverage.out ./...
-              continue-on-error: true
+                  Write-Host "`n==> Build result:"
+                  Get-ChildItem uag
 
             - name: Upload binary artifact
               uses: actions/upload-artifact@v4

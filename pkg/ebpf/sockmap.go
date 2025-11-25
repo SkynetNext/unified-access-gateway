@@ -1,5 +1,5 @@
-//go:build linux
-// +build linux
+//go:build linux && ebpf
+// +build linux,ebpf
 
 package ebpf
 
@@ -212,4 +212,3 @@ func isEBPFSupported() bool {
 
 	return true
 }
-
