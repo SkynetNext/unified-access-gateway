@@ -1,45 +1,57 @@
 # Unified Access Gateway Configuration
-# All values can be overridden by environment variables (see internal/config/config.go)
+#
+# Configuration Categories:
+# 1. Infrastructure Config - Set here or via environment variables
+# 2. Business Config - Loaded from Redis (not configured here)
+#
+# See docs/CONFIGURATION.md for details
 
-server:
-  listen_addr: ":8080"
-  max_connections: 10000
+# =============================================================================
+# Infrastructure Configuration (can be set here or via env vars)
+# =============================================================================
 
 metrics:
   enabled: true
   listen_addr: ":9090"
 
-backends:
-  http:
-    target_url: "http://httpproxy-service:5000"
-    timeout: 30s
-  tcp:
-    target_addr: "gateserver-service:6000"
-    timeout: 60s
-
-lifecycle:
-  shutdown_timeout: 60s # Max time to wait for graceful shutdown
-  drain_wait_time: 3600s # Max time to drain long-lived connections (1 hour)
-
 security:
-  auth:
-    enabled: false
-    header_subject: "X-Client-Subject"
-    allowed_subjects: []
-  rate_limit:
-    enabled: true
-    requests_per_second: 100
-    burst: 200
-  audit:
-    enabled: true
-    sink: "stdout"
-  waf:
-    enabled: false
-    blocked_ips: []
-    blocked_patterns: []
+  # Redis connection settings (Infrastructure)
   redis:
-    enabled: false
-    addr: "redis:6379"
+    enabled: true
+    addr: "10.1.0.8:6379" # ECS cluster Redis
     password: ""
     db: 0
-    key_prefix: "gateway:"
+    key_prefix: "uag:"
+
+  # Audit logging (Infrastructure)
+  audit:
+    enabled: true
+    sink: "stdout" # stdout, stderr, file:///var/log/uag/audit.log
+
+# =============================================================================
+# Business Configuration - READ FROM REDIS
+# The following are NOT configured here, they must be set in Redis:
+#
+# Redis Key: uag:business:config
+#   - server.listen_addr
+#   - server.max_connections
+#   - backends.http.target_url
+#   - backends.http.timeout
+#   - backends.tcp.target_addr
+#   - backends.tcp.timeout
+#   - lifecycle.shutdown_timeout
+#   - lifecycle.drain_wait_time
+#
+# Redis Key: uag:rate_limit
+#   - enabled, rps, burst
+#
+# Redis Key: uag:waf:config
+#   - enabled
+#
+# Redis Key: uag:waf:blocked_ips (Set)
+# Redis Key: uag:waf:blocked_patterns (Set)
+# Redis Key: uag:auth:config
+# Redis Key: uag:auth:allowed_subjects (Set)
+#
+# If Redis is unavailable, gateway will report NOT READY via /ready endpoint
+# =============================================================================
