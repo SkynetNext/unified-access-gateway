@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -13,12 +14,13 @@ import (
 )
 
 type Server struct {
-	cfg        *config.Config
-	listener   *Listener
-	draining   int32 // Atomic: 0=Running, 1=Draining
-	wg         sync.WaitGroup
-	security   *security.Manager
-	redisStore *config.RedisStore
+	cfg          *config.Config
+	listener     *Listener
+	draining     int32 // Atomic: 0=Running, 1=Draining
+	wg           sync.WaitGroup
+	security     *security.Manager
+	redisStore   *config.RedisStore
+	metricsServer *http.Server // For graceful shutdown
 }
 
 func NewServer(cfg *config.Config, store *config.RedisStore) *Server {
@@ -34,16 +36,21 @@ func NewServer(cfg *config.Config, store *config.RedisStore) *Server {
 func (s *Server) Start() {
 	// 1. Start Metrics Server (if enabled)
 	if s.cfg.Metrics.Enabled {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		mux.HandleFunc("/health", s.healthHandler)
+		mux.HandleFunc("/ready", s.readyHandler) // K8s Readiness Probe
+
+		s.metricsServer = &http.Server{
+			Addr:    s.cfg.Metrics.ListenAddr,
+			Handler: mux,
+		}
+
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			mux := http.NewServeMux()
-			mux.Handle("/metrics", promhttp.Handler())
-			mux.HandleFunc("/health", s.healthHandler)
-			mux.HandleFunc("/ready", s.readyHandler) // K8s Readiness Probe
-
 			xlog.Infof("Metrics server listening on %s", s.cfg.Metrics.ListenAddr)
-			if err := http.ListenAndServe(s.cfg.Metrics.ListenAddr, mux); err != nil {
+			if err := s.metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				xlog.Errorf("Metrics server error: %v", err)
 			}
 		}()
@@ -68,26 +75,62 @@ func (s *Server) GracefulShutdown(timeout time.Duration) {
 	atomic.StoreInt32(&s.draining, 1)
 
 	// 2. Wait for K8s endpoints propagation (usually 5-10s)
-	xlog.Infof("Waiting for K8s to deregister endpoints...")
-	time.Sleep(5 * time.Second)
+	// Use shorter wait if timeout is small
+	// NOTE: Metrics server stays running during this time for K8s probes
+	k8sWaitTime := 5 * time.Second
+	if timeout < 10*time.Second {
+		k8sWaitTime = 2 * time.Second // Shorter wait for quick shutdowns
+	}
+	xlog.Infof("Waiting for K8s to deregister endpoints (%v)...", k8sWaitTime)
+	xlog.Infof("Metrics server remains available for /health and /ready probes during shutdown")
+	time.Sleep(k8sWaitTime)
 
 	// 3. Stop Listener (Stop accepting new TCP connections)
+	// Metrics server still running for monitoring and probes
 	s.listener.Stop()
 
 	// 4. Wait for active connections to drain
-	// In production, use sync.WaitGroup to track active connections
-	// For long-lived gaming connections, this could be hours (configured via DRAIN_WAIT_TIME)
-	xlog.Infof("Waiting for active connections to drain (Timeout: %v)...", timeout)
-	time.Sleep(5 * time.Second) // Mock wait - in production, wait on WaitGroup with timeout
+	// Calculate remaining time for connection drain
+	// Metrics server remains available for monitoring and probes during this time
+	remainingTime := timeout - k8sWaitTime
+	if remainingTime < 0 {
+		remainingTime = 0
+	}
+	
+	if remainingTime > 0 {
+		xlog.Infof("Waiting for active connections to drain (Timeout: %v)...", remainingTime)
+		xlog.Infof("Metrics server remains available for /health and /ready probes during drain")
+		time.Sleep(remainingTime)
+	} else {
+		xlog.Infof("No time remaining for connection drain")
+	}
 
-	// 5. Wait for all goroutines to finish
+	// 5. Stop Metrics Server (graceful shutdown) - LAST to close
+	// This allows monitoring and probes to work during entire shutdown process
+	// After this, metrics server goroutine will complete, and s.wg.Wait() can finish
+	if s.metricsServer != nil {
+		xlog.Infof("Shutting down metrics server (last step)...")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.metricsServer.Shutdown(ctx); err != nil {
+			xlog.Warnf("Metrics server shutdown error: %v", err)
+		}
+	}
+
+	// 6. Wait for all goroutines to finish
+	// Listener goroutine already finished (acceptLoop exited after Stop())
+	// Metrics server goroutine will finish after Shutdown()
+	xlog.Infof("Waiting for all goroutines to finish...")
 	s.wg.Wait()
+
+	// 7. Close Redis store (final cleanup)
+	// All services are stopped, now close external connections
 	if s.redisStore != nil {
 		if err := s.redisStore.Close(); err != nil {
 			xlog.Warnf("Failed to close Redis store: %v", err)
 		}
 	}
-	xlog.Infof("All goroutines finished. Shutdown complete.")
+	xlog.Infof("Shutdown complete.")
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
