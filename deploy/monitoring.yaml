@@ -327,14 +327,26 @@ data:
           },
           {
             "id": 10,
-            "title": "Upstream Latency",
+            "title": "Upstream Latency (HTTP: Response Time, TCP: Connection Establishment)",
             "type": "timeseries",
             "gridPos": {"h": 6, "w": 12, "x": 12, "y": 20},
-            "targets": [{
-              "expr": "histogram_quantile(0.99, sum(rate(gateway_upstream_duration_seconds_bucket[5m])) by (le, upstream))",
-              "legendFormat": "P99 - {{upstream}}",
-              "refId": "A"
-            }],
+            "targets": [
+              {
+                "expr": "histogram_quantile(0.50, sum(rate(gateway_upstream_duration_seconds_bucket[5m])) by (le, upstream))",
+                "legendFormat": "P50 - {{upstream}}",
+                "refId": "A"
+              },
+              {
+                "expr": "histogram_quantile(0.95, sum(rate(gateway_upstream_duration_seconds_bucket[5m])) by (le, upstream))",
+                "legendFormat": "P95 - {{upstream}}",
+                "refId": "B"
+              },
+              {
+                "expr": "histogram_quantile(0.99, sum(rate(gateway_upstream_duration_seconds_bucket[5m])) by (le, upstream))",
+                "legendFormat": "P99 - {{upstream}}",
+                "refId": "C"
+              }
+            ],
             "fieldConfig": {
               "defaults": {
                 "color": {"mode": "palette-classic"},

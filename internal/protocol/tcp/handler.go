@@ -65,17 +65,23 @@ func (h *Handler) Handle(src net.Conn) {
 
 	// Connect to backend with timeout
 	connTimeout := 5 * time.Second
+	dialStartTime := time.Now()
 	dst, err := net.DialTimeout("tcp", h.backendAddr, connTimeout)
+	dialDuration := time.Since(dialStartTime)
 	if err != nil {
 		xlog.Errorf("Failed to dial backend %s: %v", h.backendAddr, err)
 		if h.security != nil {
 			h.security.AuditTCP(src.RemoteAddr().String(), h.backendAddr, false, err.Error())
 		}
-		// Record failed connection metrics
-		middleware.RecordUpstreamRequest(h.backendAddr, "connection_failed", 0)
+		// Record failed connection metrics (dial time even for failures)
+		middleware.RecordUpstreamRequest(h.backendAddr, "connection_failed", dialDuration.Seconds())
 		return
 	}
 	defer dst.Close()
+
+	// Record connection establishment time (dial time) for TCP
+	// This is the meaningful latency metric for TCP transparent proxy
+	middleware.RecordUpstreamRequest(h.backendAddr, "success", dialDuration.Seconds())
 
 	xlog.Infof("TCP Proxy: %s <-> %s", src.RemoteAddr(), dst.RemoteAddr())
 	if h.security != nil {
@@ -130,6 +136,5 @@ func (h *Handler) Handle(src net.Conn) {
 	middleware.RecordTCPMetrics(h.backendAddr, duration.Seconds(), bytesIn, bytesOut)
 	middleware.RecordConnectionDuration("tcp", duration.Seconds())
 
-	// Record successful upstream request
-	middleware.RecordUpstreamRequest(h.backendAddr, "success", duration.Seconds())
+	// Note: Upstream request latency (dial time) is already recorded after connection establishment
 }
