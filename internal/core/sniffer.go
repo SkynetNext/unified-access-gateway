@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
@@ -60,8 +61,11 @@ func (s *SniffConn) Sniff() ProtocolType {
 	}
 
 	// HTTP detection: GET, POST, PUT, DELETE, HEAD...
+	// Check first 3-4 bytes for HTTP methods
 	head := string(bytes)
-	if head == "GET " || head == "POST" || head == "HTTP" {
+	if strings.HasPrefix(head, "GET") || strings.HasPrefix(head, "POST") ||
+		strings.HasPrefix(head, "PUT ") || strings.HasPrefix(head, "DELE") ||
+		strings.HasPrefix(head, "HEAD") || strings.HasPrefix(head, "HTTP") {
 		return ProtocolHTTP
 	}
 
