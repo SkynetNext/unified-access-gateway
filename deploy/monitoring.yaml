@@ -14,7 +14,7 @@ metadata:
   namespace: monitoring
   labels:
     app: uag
-    release: prometheus
+    release: kube-prometheus-stack  # Must match Prometheus serviceMonitorSelector
 spec:
   selector:
     matchLabels:
