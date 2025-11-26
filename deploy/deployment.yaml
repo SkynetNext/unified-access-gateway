@@ -218,10 +218,14 @@ spec:
   selector:
     app: uag
   ports:
-    - name: business
-      port: 80
+    - name: gateway-9621
+      port: 9621
       targetPort: 8080
-      nodePort: 30080
+      nodePort: 30621
+    - name: gateway-9622
+      port: 9622
+      targetPort: 8080
+      nodePort: 30622
     - name: metrics
       port: 9090
       targetPort: 9090

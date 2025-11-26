@@ -48,7 +48,7 @@ spec:
                 "server.max_connections" "10000" \
                 "backends.http.target_url" "http://httpproxy-service.hgame.svc.cluster.local:5000" \
                 "backends.http.timeout" "30s" \
-                "backends.tcp.target_addr" "gateserver-service.hgame.svc.cluster.local:6000" \
+                "backends.tcp.target_addr" "hgame-gategame-backend-1.hgame.svc.cluster.local:9621" \
                 "backends.tcp.timeout" "60s" \
                 "lifecycle.shutdown_timeout" "60s" \
                 "lifecycle.drain_wait_time" "3600s"
