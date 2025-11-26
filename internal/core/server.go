@@ -8,19 +8,21 @@ import (
 	"time"
 
 	"github.com/SkynetNext/unified-access-gateway/internal/config"
+	"github.com/SkynetNext/unified-access-gateway/internal/healthcheck"
 	"github.com/SkynetNext/unified-access-gateway/internal/security"
 	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Server struct {
-	cfg          *config.Config
-	listener     *Listener
-	draining     int32 // Atomic: 0=Running, 1=Draining
-	wg           sync.WaitGroup
-	security     *security.Manager
-	redisStore   *config.RedisStore
+	cfg           *config.Config
+	listener      *Listener
+	draining      int32 // Atomic: 0=Running, 1=Draining
+	wg            sync.WaitGroup
+	security      *security.Manager
+	redisStore    *config.RedisStore
 	metricsServer *http.Server // For graceful shutdown
+	healthChecker *healthcheck.UpstreamHealthChecker
 }
 
 func NewServer(cfg *config.Config, store *config.RedisStore) *Server {
@@ -56,7 +58,11 @@ func (s *Server) Start() {
 		}()
 	}
 
-	// 2. Start Business Listener
+	// 2. Start Upstream Health Checker
+	s.healthChecker = healthcheck.NewUpstreamHealthChecker(s.cfg)
+	s.healthChecker.Start()
+
+	// 3. Start Business Listener
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -85,18 +91,23 @@ func (s *Server) GracefulShutdown(timeout time.Duration) {
 	xlog.Infof("Metrics server remains available for /health and /ready probes during shutdown")
 	time.Sleep(k8sWaitTime)
 
-	// 3. Stop Listener (Stop accepting new TCP connections)
+	// 3. Stop Upstream Health Checker
+	if s.healthChecker != nil {
+		s.healthChecker.Stop()
+	}
+
+	// 4. Stop Listener (Stop accepting new TCP connections)
 	// Metrics server still running for monitoring and probes
 	s.listener.Stop()
 
-	// 4. Wait for active connections to drain
+	// 5. Wait for active connections to drain
 	// Calculate remaining time for connection drain
 	// Metrics server remains available for monitoring and probes during this time
 	remainingTime := timeout - k8sWaitTime
 	if remainingTime < 0 {
 		remainingTime = 0
 	}
-	
+
 	if remainingTime > 0 {
 		xlog.Infof("Waiting for active connections to drain (Timeout: %v)...", remainingTime)
 		xlog.Infof("Metrics server remains available for /health and /ready probes during drain")
@@ -105,7 +116,7 @@ func (s *Server) GracefulShutdown(timeout time.Duration) {
 		xlog.Infof("No time remaining for connection drain")
 	}
 
-	// 5. Stop Metrics Server (graceful shutdown) - LAST to close
+	// 6. Stop Metrics Server (graceful shutdown) - LAST to close
 	// This allows monitoring and probes to work during entire shutdown process
 	// After this, metrics server goroutine will complete, and s.wg.Wait() can finish
 	if s.metricsServer != nil {
@@ -117,13 +128,13 @@ func (s *Server) GracefulShutdown(timeout time.Duration) {
 		}
 	}
 
-	// 6. Wait for all goroutines to finish
+	// 7. Wait for all goroutines to finish
 	// Listener goroutine already finished (acceptLoop exited after Stop())
 	// Metrics server goroutine will finish after Shutdown()
 	xlog.Infof("Waiting for all goroutines to finish...")
 	s.wg.Wait()
 
-	// 7. Close Redis store (final cleanup)
+	// 8. Close Redis store (final cleanup)
 	// All services are stopped, now close external connections
 	if s.redisStore != nil {
 		if err := s.redisStore.Close(); err != nil {

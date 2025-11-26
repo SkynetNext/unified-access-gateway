@@ -40,6 +40,8 @@ func NewHandler(cfg *config.Config, sec *security.Manager) *Handler {
 		originalDirector(req)
 		// Add X-Forwarded-For or other headers here
 		req.Header.Set("X-Gateway-ID", "uag-v1")
+		// Set upstream identifier for metrics
+		req.Header.Set("X-Upstream", target.Host)
 	}
 
 	// Custom ModifyResponse to record Status Code (Optional)

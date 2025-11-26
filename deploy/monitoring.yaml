@@ -59,12 +59,12 @@ data:
       "dashboard": {
         "id": null,
         "uid": "uag-dashboard",
-        "title": "Unified Access Gateway",
-        "tags": ["uag", "gateway"],
+        "title": "Unified Access Gateway - Industry Standard Metrics",
+        "tags": ["uag", "gateway", "api-gateway"],
         "style": "dark",
         "timezone": "browser",
         "schemaVersion": 16,
-        "version": 1,
+        "version": 2,
         "refresh": "30s",
         "time": {
           "from": "now-6h",
@@ -80,16 +80,63 @@ data:
         "panels": [
           {
             "id": 1,
+            "title": "Request Rate (RPS)",
+            "type": "stat",
+            "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+            "targets": [{
+              "expr": "sum(rate(gateway_requests_total[1m]))",
+              "refId": "A"
+            }],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "thresholds"},
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"value": null, "color": "green"},
+                    {"value": 100, "color": "yellow"},
+                    {"value": 1000, "color": "red"}
+                  ]
+                },
+                "unit": "reqps",
+                "decimals": 1
+              }
+            }
+          },
+          {
+            "id": 2,
+            "title": "Error Rate (5xx)",
+            "type": "stat",
+            "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+            "targets": [{
+              "expr": "sum(rate(gateway_requests_total{status=~\"5..\"}[1m])) / sum(rate(gateway_requests_total[1m])) * 100",
+              "refId": "A"
+            }],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "thresholds"},
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"value": null, "color": "green"},
+                    {"value": 0.1, "color": "yellow"},
+                    {"value": 1, "color": "red"}
+                  ]
+                },
+                "unit": "percent",
+                "decimals": 2
+              }
+            }
+          },
+          {
+            "id": 3,
             "title": "Active Connections",
             "type": "stat",
-            "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
-            "targets": [
-              {
-                "expr": "sum(gateway_active_connections)",
-                "legendFormat": "Active",
-                "refId": "A"
-              }
-            ],
+            "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+            "targets": [{
+              "expr": "sum(gateway_active_connections)",
+              "refId": "A"
+            }],
             "fieldConfig": {
               "defaults": {
                 "color": {"mode": "thresholds"},
@@ -100,22 +147,20 @@ data:
                     {"value": 1000, "color": "yellow"},
                     {"value": 5000, "color": "red"}
                   ]
-                }
+                },
+                "unit": "short"
               }
             }
           },
           {
-            "id": 2,
+            "id": 4,
             "title": "Pod Count",
             "type": "stat",
-            "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
-            "targets": [
-              {
-                "expr": "count(up{job=\"uag\"})",
-                "legendFormat": "Pods",
-                "refId": "A"
-              }
-            ],
+            "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+            "targets": [{
+              "expr": "count(up{job=\"uag\"})",
+              "refId": "A"
+            }],
             "fieldConfig": {
               "defaults": {
                 "color": {"mode": "thresholds"},
@@ -124,89 +169,252 @@ data:
                   "steps": [
                     {"value": null, "color": "green"}
                   ]
-                }
+                },
+                "unit": "short"
               }
             }
           },
           {
-            "id": 3,
-            "title": "Requests per Second",
+            "id": 5,
+            "title": "Request Rate by Protocol",
             "type": "timeseries",
             "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
             "targets": [
               {
-                "expr": "sum(rate(gateway_requests_total[1m]))",
-                "legendFormat": "QPS",
+                "expr": "sum(rate(gateway_requests_total{protocol=\"http\"}[1m])) by (protocol)",
+                "legendFormat": "HTTP",
                 "refId": "A"
+              },
+              {
+                "expr": "sum(rate(gateway_requests_total{protocol=\"tcp\"}[1m])) by (protocol)",
+                "legendFormat": "TCP",
+                "refId": "B"
               }
             ],
             "fieldConfig": {
               "defaults": {
                 "color": {"mode": "palette-classic"},
                 "custom": {
-                  "axisLabel": "",
-                  "axisPlacement": "auto",
-                  "barAlignment": 0,
                   "drawStyle": "line",
+                  "lineInterpolation": "smooth",
                   "fillOpacity": 10,
-                  "gradientMode": "none",
-                  "hideFrom": {"tooltip": false, "viz": false, "legend": false},
-                  "lineInterpolation": "linear",
-                  "lineWidth": 1,
-                  "pointSize": 5,
-                  "scaleDistribution": {"type": "linear"},
-                  "showPoints": "never",
-                  "spanNulls": false
-                },
-                "mappings": [],
-                "thresholds": {
-                  "mode": "absolute",
-                  "steps": [
-                    {"value": null, "color": "green"}
-                  ]
+                  "pointSize": 5
                 },
                 "unit": "reqps"
               }
             }
           },
           {
-            "id": 4,
-            "title": "Request Latency (p99)",
+            "id": 6,
+            "title": "Request Latency (P50/P95/P99)",
             "type": "timeseries",
             "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
             "targets": [
               {
-                "expr": "histogram_quantile(0.99, sum(rate(gateway_request_duration_seconds_bucket[5m])) by (le))",
-                "legendFormat": "p99",
+                "expr": "histogram_quantile(0.50, sum(rate(gateway_request_duration_seconds_bucket[5m])) by (le, protocol))",
+                "legendFormat": "P50 - {{protocol}}",
                 "refId": "A"
+              },
+              {
+                "expr": "histogram_quantile(0.95, sum(rate(gateway_request_duration_seconds_bucket[5m])) by (le, protocol))",
+                "legendFormat": "P95 - {{protocol}}",
+                "refId": "B"
+              },
+              {
+                "expr": "histogram_quantile(0.99, sum(rate(gateway_request_duration_seconds_bucket[5m])) by (le, protocol))",
+                "legendFormat": "P99 - {{protocol}}",
+                "refId": "C"
               }
             ],
             "fieldConfig": {
               "defaults": {
                 "color": {"mode": "palette-classic"},
                 "custom": {
-                  "axisLabel": "",
-                  "axisPlacement": "auto",
-                  "barAlignment": 0,
                   "drawStyle": "line",
-                  "fillOpacity": 10,
-                  "gradientMode": "none",
-                  "hideFrom": {"tooltip": false, "viz": false, "legend": false},
-                  "lineInterpolation": "linear",
-                  "lineWidth": 1,
-                  "pointSize": 5,
-                  "scaleDistribution": {"type": "linear"},
-                  "showPoints": "never",
-                  "spanNulls": false
+                  "lineInterpolation": "smooth",
+                  "fillOpacity": 10
                 },
-                "mappings": [],
+                "unit": "s",
+                "decimals": 3
+              }
+            }
+          },
+          {
+            "id": 7,
+            "title": "HTTP Status Code Distribution",
+            "type": "timeseries",
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+            "targets": [
+              {
+                "expr": "sum(rate(gateway_requests_total{protocol=\"http\",status=~\"2..\"}[1m])) by (status)",
+                "legendFormat": "2xx - {{status}}",
+                "refId": "A"
+              },
+              {
+                "expr": "sum(rate(gateway_requests_total{protocol=\"http\",status=~\"4..\"}[1m])) by (status)",
+                "legendFormat": "4xx - {{status}}",
+                "refId": "B"
+              },
+              {
+                "expr": "sum(rate(gateway_requests_total{protocol=\"http\",status=~\"5..\"}[1m])) by (status)",
+                "legendFormat": "5xx - {{status}}",
+                "refId": "C"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "palette-classic"},
+                "custom": {
+                  "drawStyle": "bars",
+                  "fillOpacity": 80
+                },
+                "unit": "reqps"
+              }
+            }
+          },
+          {
+            "id": 8,
+            "title": "Throughput (Bytes In/Out)",
+            "type": "timeseries",
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+            "targets": [
+              {
+                "expr": "sum(rate(gateway_request_bytes_total{direction=\"in\"}[1m]))",
+                "legendFormat": "Bytes In",
+                "refId": "A"
+              },
+              {
+                "expr": "sum(rate(gateway_request_bytes_total{direction=\"out\"}[1m]))",
+                "legendFormat": "Bytes Out",
+                "refId": "B"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "palette-classic"},
+                "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10
+                },
+                "unit": "Bps"
+              }
+            }
+          },
+          {
+            "id": 9,
+            "title": "Upstream Health Status",
+            "type": "timeseries",
+            "gridPos": {"h": 6, "w": 12, "x": 0, "y": 20},
+            "targets": [{
+              "expr": "gateway_upstream_health",
+              "legendFormat": "{{upstream}}",
+              "refId": "A"
+            }],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "thresholds"},
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
-                    {"value": null, "color": "green"}
+                    {"value": null, "color": "red"},
+                    {"value": 1, "color": "green"}
                   ]
                 },
-                "unit": "s"
+                "unit": "short",
+                "min": 0,
+                "max": 1
+              }
+            }
+          },
+          {
+            "id": 10,
+            "title": "Upstream Latency",
+            "type": "timeseries",
+            "gridPos": {"h": 6, "w": 12, "x": 12, "y": 20},
+            "targets": [{
+              "expr": "histogram_quantile(0.99, sum(rate(gateway_upstream_duration_seconds_bucket[5m])) by (le, upstream))",
+              "legendFormat": "P99 - {{upstream}}",
+              "refId": "A"
+            }],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "palette-classic"},
+                "custom": {
+                  "drawStyle": "line"
+                },
+                "unit": "s",
+                "decimals": 3
+              }
+            }
+          },
+          {
+            "id": 11,
+            "title": "Security Blocks",
+            "type": "timeseries",
+            "gridPos": {"h": 6, "w": 8, "x": 0, "y": 26},
+            "targets": [{
+              "expr": "sum(rate(gateway_security_blocks_total[1m])) by (reason)",
+              "legendFormat": "{{reason}}",
+              "refId": "A"
+            }],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "palette-classic"},
+                "custom": {
+                  "drawStyle": "bars"
+                },
+                "unit": "reqps"
+              }
+            }
+          },
+          {
+            "id": 12,
+            "title": "Connection Statistics",
+            "type": "timeseries",
+            "gridPos": {"h": 6, "w": 8, "x": 8, "y": 26},
+            "targets": [
+              {
+                "expr": "sum(rate(gateway_connections_total[1m])) by (protocol)",
+                "legendFormat": "Connections/sec - {{protocol}}",
+                "refId": "A"
+              },
+              {
+                "expr": "sum(gateway_active_connections) by (protocol)",
+                "legendFormat": "Active - {{protocol}}",
+                "refId": "B"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "palette-classic"},
+                "custom": {
+                  "drawStyle": "line"
+                },
+                "unit": "short"
+              }
+            }
+          },
+          {
+            "id": 13,
+            "title": "Rate Limit Hits",
+            "type": "stat",
+            "gridPos": {"h": 6, "w": 8, "x": 16, "y": 26},
+            "targets": [{
+              "expr": "sum(increase(gateway_ratelimit_hits_total[5m]))",
+              "refId": "A"
+            }],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "thresholds"},
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"value": null, "color": "green"},
+                    {"value": 1, "color": "yellow"},
+                    {"value": 10, "color": "red"}
+                  ]
+                },
+                "unit": "short"
               }
             }
           }

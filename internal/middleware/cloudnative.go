@@ -45,35 +45,51 @@ func CloudNativeMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Gateway-Version", "1.0.0")
 		w.Header().Set("X-Request-ID", trace.SpanContextFromContext(ctx).TraceID().String())
 
-		// 7. Record metrics
+		// 7. Wrap response writer to capture status and bytes
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+
+		// 8. Record metrics
 		start := time.Now()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(rw, r)
 		duration := time.Since(start)
 
-		// 8. Update span with response
-		statusCode := 200
-		if ww, ok := w.(*responseWriter); ok {
-			statusCode = ww.statusCode
-		}
+		// 9. Update span with response
 		span.SetAttributes(
-			attribute.Int("http.status_code", statusCode),
+			attribute.Int("http.status_code", rw.statusCode),
 			attribute.Int64("http.duration_ms", duration.Milliseconds()),
 		)
 
-		// 9. Record metrics
-		RecordMetrics("http", strconv.Itoa(statusCode), duration.Seconds())
+		// 10. Record comprehensive metrics
+		bytesIn := int64(r.ContentLength)
+		if bytesIn < 0 {
+			bytesIn = 0 // ContentLength can be -1 if unknown
+		}
+
+		upstream := r.Header.Get("X-Upstream") // Set by proxy if available
+		if upstream == "" {
+			upstream = "unknown"
+		}
+
+		RecordHTTPMetrics(r.Method, strconv.Itoa(rw.statusCode), upstream, duration.Seconds(), bytesIn, rw.bytesWritten)
 	})
 }
 
-// responseWriter wraps http.ResponseWriter to capture status code
+// responseWriter wraps http.ResponseWriter to capture status code and bytes
 type responseWriter struct {
 	http.ResponseWriter
-	statusCode int
+	statusCode   int
+	bytesWritten int64
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	n, err := rw.ResponseWriter.Write(b)
+	rw.bytesWritten += int64(n)
+	return n, err
 }
 
 // K8sProbeMiddleware handles K8s liveness/readiness probes
@@ -109,4 +125,3 @@ func ServiceMeshMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-

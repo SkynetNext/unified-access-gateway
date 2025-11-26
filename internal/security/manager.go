@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SkynetNext/unified-access-gateway/internal/config"
+	"github.com/SkynetNext/unified-access-gateway/internal/middleware"
 	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 	"golang.org/x/time/rate"
 )
@@ -146,11 +147,13 @@ func (m *Manager) CheckConnection(addr net.Addr) error {
 	ip := extractIP(addr.String())
 
 	if m.cfg.Security.WAF.Enabled && m.isBlockedIP(ip) {
+		middleware.RecordSecurityBlock("waf_blocked_ip")
 		return fmt.Errorf("blocked IP: %s", ip)
 	}
 
 	limiter := m.getLimiter()
 	if limiter != nil && !limiter.Allow() {
+		middleware.RecordSecurityBlock("rate_limit")
 		return errors.New("rate limit exceeded")
 	}
 
@@ -171,6 +174,7 @@ func (m *Manager) AuthorizeHTTP(r *http.Request) error {
 		subject = r.Header.Get(m.cfg.Security.Auth.HeaderSubject)
 	}
 	if subject == "" {
+		middleware.RecordSecurityBlock("auth_missing_subject")
 		return errors.New("client certificate subject missing")
 	}
 
@@ -181,6 +185,7 @@ func (m *Manager) AuthorizeHTTP(r *http.Request) error {
 		return nil
 	}
 	if _, ok := allowed[subject]; !ok {
+		middleware.RecordSecurityBlock("auth_unauthorized")
 		return fmt.Errorf("subject %s not allowed", subject)
 	}
 	return nil
@@ -193,6 +198,7 @@ func (m *Manager) ApplyWAF(r *http.Request) error {
 	}
 	ip := extractIP(r.RemoteAddr)
 	if m.isBlockedIP(ip) {
+		middleware.RecordSecurityBlock("waf_blocked_ip")
 		return fmt.Errorf("blocked IP: %s", ip)
 	}
 	patterns := m.getBlockedPatterns()
@@ -205,6 +211,7 @@ func (m *Manager) ApplyWAF(r *http.Request) error {
 	}
 	for _, re := range patterns {
 		if re.MatchString(payload) {
+			middleware.RecordSecurityBlock("waf_pattern_match")
 			return fmt.Errorf("blocked by pattern %s", re.String())
 		}
 	}

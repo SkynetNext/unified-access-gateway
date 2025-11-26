@@ -31,7 +31,7 @@ func NewHandler(cfg *config.Config, sec *security.Manager) *Handler {
 		backendAddr: addr,
 		security:    sec,
 	}
-	
+
 	// Try to initialize eBPF SockMap (optional, graceful fallback)
 	mgr, err := ebpf.NewSockMapManager()
 	if err != nil {
@@ -49,7 +49,7 @@ func NewHandler(cfg *config.Config, sec *security.Manager) *Handler {
 			}
 		}
 	}
-	
+
 	return h
 }
 
@@ -59,6 +59,10 @@ func (h *Handler) Handle(src net.Conn) {
 	defer middleware.DecActiveConnections("tcp")
 	defer src.Close()
 
+	// Track connection start time and bytes for metrics
+	startTime := time.Now()
+	var bytesIn, bytesOut int64
+
 	// Connect to backend with timeout
 	connTimeout := 5 * time.Second
 	dst, err := net.DialTimeout("tcp", h.backendAddr, connTimeout)
@@ -67,6 +71,8 @@ func (h *Handler) Handle(src net.Conn) {
 		if h.security != nil {
 			h.security.AuditTCP(src.RemoteAddr().String(), h.backendAddr, false, err.Error())
 		}
+		// Record failed connection metrics
+		middleware.RecordUpstreamRequest(h.backendAddr, "connection_failed", 0)
 		return
 	}
 	defer dst.Close()
@@ -90,19 +96,40 @@ func (h *Handler) Handle(src net.Conn) {
 	// Even with eBPF, we need this for initial packets and fallback
 	// eBPF will handle most packets at kernel level after registration
 	errChan := make(chan error, 2)
-	
+	bytesChan := make(chan struct{ in, out int64 }, 2)
+
 	go func() {
 		// src -> dst (Upstream)
-		_, err := io.Copy(dst, src)
+		n, err := io.Copy(dst, src)
+		bytesChan <- struct{ in, out int64 }{in: n, out: 0}
 		errChan <- err
 	}()
-	
+
 	go func() {
 		// dst -> src (Downstream)
-		_, err := io.Copy(src, dst)
+		n, err := io.Copy(src, dst)
+		bytesChan <- struct{ in, out int64 }{in: 0, out: n}
 		errChan <- err
 	}()
 
 	// Wait for any side to close
 	<-errChan
+
+	// Collect bytes transferred from both directions
+	for i := 0; i < 2; i++ {
+		select {
+		case b := <-bytesChan:
+			bytesIn += b.in
+			bytesOut += b.out
+		default:
+		}
+	}
+
+	// Record TCP metrics
+	duration := time.Since(startTime)
+	middleware.RecordTCPMetrics(h.backendAddr, duration.Seconds(), bytesIn, bytesOut)
+	middleware.RecordConnectionDuration("tcp", duration.Seconds())
+
+	// Record successful upstream request
+	middleware.RecordUpstreamRequest(h.backendAddr, "success", duration.Seconds())
 }
