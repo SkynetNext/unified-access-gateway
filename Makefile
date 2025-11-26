@@ -9,15 +9,20 @@ GOFLAGS=-v
 LDFLAGS=-ldflags "-s -w"
 
 # eBPF build variables
-CLANG=clang
+# Allow override via environment variable (e.g., CLANG=clang-18)
+CLANG ?= clang
 CFLAGS=-O2 -g -Wall -Werror -target bpf -D__TARGET_ARCH_x86_64
 BPF_INCLUDE=$(PKG_EBPF_DIR)/include
+
+# Go build variables
+GOPROXY ?= direct
+CGO_ENABLED ?= 0
 
 # Directories
 CMD_DIR=./cmd/gateway
 PKG_EBPF_DIR=./pkg/ebpf
 
-.PHONY: all build build-linux build-windows clean test generate-ebpf install-deps help
+.PHONY: all build build-linux build-windows clean test generate-ebpf install-deps deps help
 
 # Default target
 all: build
@@ -29,33 +34,44 @@ build:
 	@echo "Build complete: $(BINARY_NAME)"
 
 ## build-linux: Build for Linux
-build-linux:
+build-linux: deps
 	@echo "Building for Linux..."
-	GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BINARY_LINUX) $(CMD_DIR)
-	@echo "Build complete: $(BINARY_LINUX)"
+	@echo "GOPROXY=$(GOPROXY), CGO_ENABLED=$(CGO_ENABLED)"
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) GOPROXY=$(GOPROXY) $(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BINARY_LINUX) $(CMD_DIR)
+	@echo "✅ Build complete: $(BINARY_LINUX)"
 
 ## build-windows: Build for Windows
-build-windows:
+build-windows: deps
 	@echo "Building for Windows..."
-	GOOS=windows GOARCH=amd64 $(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BINARY_WINDOWS) $(CMD_DIR)
-	@echo "Build complete: $(BINARY_WINDOWS)"
+	@echo "GOPROXY=$(GOPROXY), CGO_ENABLED=$(CGO_ENABLED)"
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) GOPROXY=$(GOPROXY) $(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BINARY_WINDOWS) $(CMD_DIR)
+	@echo "✅ Build complete: $(BINARY_WINDOWS)"
+
+## deps: Download Go dependencies
+deps:
+	@echo "Downloading dependencies..."
+	GOPROXY=$(GOPROXY) $(GO) mod tidy
+	GOPROXY=$(GOPROXY) $(GO) mod download
+	@echo "✅ Dependencies ready"
 
 ## generate-ebpf: Generate eBPF Go bindings from C code
 generate-ebpf:
 	@echo "Generating eBPF bindings..."
+	@echo "Using CLANG=$(CLANG)"
 	@if ! command -v bpf2go > /dev/null; then \
-		echo "Error: bpf2go not found. Installing..."; \
+		echo "Installing bpf2go..."; \
 		$(GO) install github.com/cilium/ebpf/cmd/bpf2go@latest; \
 	fi
 	@if ! command -v $(CLANG) > /dev/null; then \
-		echo "Error: clang not found. Please install: apt-get install clang llvm"; \
+		echo "Error: $(CLANG) not found. Please install: apt-get install $(CLANG) llvm"; \
 		exit 1; \
 	fi
+	@echo "Checking $(CLANG) version..."
+	@$(CLANG) --version || exit 1
 	@echo "Compiling SockMap program..."
-	cd $(PKG_EBPF_DIR) && $(GO) generate ./sockmap.go
-	@echo "Compiling XDP program..."
-	cd $(PKG_EBPF_DIR) && $(GO) generate ./xdp.go
-	@echo "eBPF bindings generated successfully"
+	@cd $(PKG_EBPF_DIR) && export GOPACKAGE=ebpf && \
+		bpf2go -cc $(CLANG) -target bpf -cflags "-O2 -g -Wall -Werror -D__TARGET_ARCH_x86_64" bpf sockmap.c -- -I./include
+	@echo "✅ eBPF bindings generated successfully"
 
 ## install-deps: Install build dependencies (Linux only)
 install-deps:

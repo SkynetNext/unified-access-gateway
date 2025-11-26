@@ -71,9 +71,6 @@ export GOPACKAGE=ebpf
 
 # Generate SockMap bindings
 bpf2go -cc clang -target bpf -cflags "-O2 -g -Wall" bpf sockmap.c -- -I./include
-
-# Generate XDP bindings
-bpf2go -cc clang -target bpf -cflags "-O2 -g -Wall" xdp xdp_filter.c -- -I./include
 ```
 
 ### Build with eBPF
@@ -88,7 +85,6 @@ go build -o uag ./cmd/gateway
 ```bash
 # Check if eBPF programs are loaded
 bpftool prog list | grep sock
-bpftool prog list | grep xdp
 
 # Check maps
 bpftool map list | grep sock_map
@@ -124,8 +120,7 @@ RUN apk add --no-cache clang llvm
 WORKDIR /build
 COPY pkg/ebpf/ .
 RUN export GOPACKAGE=ebpf && \
-    bpf2go -cc clang -target bpf -cflags "-O2 -g" bpf sockmap.c -- -I./include && \
-    bpf2go -cc clang -target bpf -cflags "-O2 -g" xdp xdp_filter.c -- -I./include
+    bpf2go -cc clang -target bpf -cflags "-O2 -g" bpf sockmap.c -- -I./include
 
 # Stage 2: Go builder
 FROM golang:1.21-alpine AS go-builder
@@ -223,7 +218,6 @@ jobs:
           cd pkg/ebpf
           export GOPACKAGE=ebpf
           bpf2go -cc clang-18 -target bpf -cflags "-O2 -g" bpf sockmap.c -- -I./include
-          bpf2go -cc clang-18 -target bpf -cflags "-O2 -g" xdp xdp_filter.c -- -I./include
       - name: Build
         run: go build -o uag ./cmd/gateway
       - name: Test

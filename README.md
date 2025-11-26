@@ -10,7 +10,7 @@ A production-grade, cloud-native unified access gateway for high-performance mic
 - **Multi-Protocol**: HTTP/1.1, HTTP/2, TCP, WebSocket on a single port
 - **Protocol Sniffing**: Automatic detection via magic byte inspection
 - **Cloud Native**: Kubernetes-native with HPA, health probes, service discovery
-- **eBPF Acceleration**: Kernel-level SockMap and XDP for zero-copy proxying and DDoS protection
+- **eBPF Acceleration**: Kernel-level SockMap for zero-copy proxying
 - **Observability**: Prometheus metrics, OpenTelemetry tracing, structured logging
 - **Graceful Shutdown**: Zero-downtime deployments with drain mode for long-lived connections
 
@@ -55,7 +55,6 @@ The gateway automatically detects protocol type and routes traffic accordingly. 
 - **TCP**: 100k+ concurrent connections
 - **Latency**: <1ms P99 (local network)
 - **eBPF SockMap**: 30-50% latency reduction
-- **XDP**: 20-30 Mpps packet processing
 
 ## Requirements
 

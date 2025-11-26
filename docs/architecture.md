@@ -143,30 +143,20 @@ graph TB
     subgraph "User Space (Go Gateway)"
         App[Gateway Application]
         SockMapMgr[SockMap Manager]
-        XDPMgr[XDP Manager]
     end
     
     subgraph "Kernel Space (eBPF Programs)"
         SockOps[SockOps Program<br>Socket Lifecycle]
         SockMap[(SockMap<br>Socket Redirection)]
-        XDPProg[XDP Program<br>Packet Filtering]
-        XDPMap[(XDP Maps<br>IP Blacklist/Rate Limit)]
     end
     
     subgraph "Network Stack"
-        Driver[Network Driver]
         TCPIP[TCP/IP Stack]
     end
     
     App --> SockMapMgr
-    App --> XDPMgr
     SockMapMgr -->|Load & Attach| SockOps
     SockOps --> SockMap
-    XDPMgr -->|Load & Attach| XDPProg
-    XDPProg --> XDPMap
-    
-    Driver -->|Early Filter| XDPProg
-    XDPProg -->|XDP_PASS| TCPIP
     TCPIP -->|Socket Events| SockOps
     SockOps -->|Redirect| SockMap
     
@@ -174,9 +164,9 @@ graph TB
     classDef kernel fill:#FF5722,stroke:#333,stroke-width:2px,color:#fff;
     classDef network fill:#4CAF50,stroke:#333,stroke-width:2px,color:#fff;
     
-    class App,SockMapMgr,XDPMgr userspace;
-    class SockOps,SockMap,XDPProg,XDPMap kernel;
-    class Driver,TCPIP network;
+    class App,SockMapMgr userspace;
+    class SockOps,SockMap kernel;
+    class TCPIP network;
 ```
 
 ### SockMap
@@ -187,15 +177,6 @@ Kernel-level socket redirection for TCP connections:
 - Bypasses TCP/IP stack
 - 30-50% latency reduction
 - Automatic fallback to userspace
-
-### XDP
-
-Early packet filtering at driver layer:
-
-- DDoS protection
-- IP blacklisting
-- Rate limiting
-- SYN flood mitigation
 
 See [Development](development.md) for eBPF compilation details.
 
