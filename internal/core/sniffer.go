@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"time"
+
+	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 )
 
 // ProtocolType enum
@@ -69,5 +71,6 @@ func (s *SniffConn) Sniff() ProtocolType {
 	}
 
 	// Default fallback to TCP (Assuming custom game protocol)
+	xlog.Debugf("[SNIFF] %s -> TCP, peek: hex=%x ascii=%q string=%q", s.Conn.RemoteAddr(), bytes, bytes, head)
 	return ProtocolTCP
 }
