@@ -35,6 +35,12 @@ func (s *SniffConn) Read(p []byte) (int, error) {
 	return s.r.Read(p)
 }
 
+// Unwrap returns the underlying net.Conn for eBPF socket cookie extraction
+// This implements the ebpf.UnwrappableConn interface (implicitly, no import needed)
+func (s *SniffConn) Unwrap() net.Conn {
+	return s.Conn
+}
+
 // Sniff detects protocol type
 func (s *SniffConn) Sniff() ProtocolType {
 	// Set read deadline to prevent hanging on malicious connections
@@ -46,7 +52,7 @@ func (s *SniffConn) Sniff() ProtocolType {
 	if err != nil && err != io.EOF {
 		return ProtocolUnknown
 	}
-	
+
 	if len(bytes) < 2 {
 		return ProtocolUnknown
 	}
@@ -56,7 +62,7 @@ func (s *SniffConn) Sniff() ProtocolType {
 	if head == "GET " || head == "POST" || head == "HTTP" {
 		return ProtocolHTTP
 	}
-	
+
 	// TLS detection: 0x16 (Handshake)
 	if bytes[0] == 0x16 {
 		return ProtocolTLS

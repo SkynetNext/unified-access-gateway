@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/SkynetNext/unified-access-gateway/internal/core"
 	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -24,6 +23,22 @@ import (
 
 // SO_COOKIE socket option (Linux-specific)
 const SO_COOKIE = 57
+
+// UnwrappableConn is an interface for connections that wrap another net.Conn
+// Implementations should return the underlying connection
+type UnwrappableConn interface {
+	net.Conn
+	Unwrap() net.Conn
+}
+
+// unwrapConn extracts the underlying net.Conn from wrapped connections
+// Uses interface instead of reflection for better performance
+func unwrapConn(conn net.Conn) net.Conn {
+	if unwrappable, ok := conn.(UnwrappableConn); ok {
+		return unwrappable.Unwrap()
+	}
+	return conn
+}
 
 // SockMapManager manages eBPF sockmap for socket redirection
 type SockMapManager struct {
@@ -320,11 +335,9 @@ func (m *SockMapManager) IsEnabled() bool {
 // getSocketCookie extracts the kernel socket cookie from a net.Conn
 func getSocketCookie(conn net.Conn) (uint64, error) {
 	// Unwrap SniffConn if present (SniffConn wraps the original connection)
-	var actualConn net.Conn = conn
-	if sniffConn, ok := conn.(*core.SniffConn); ok {
-		actualConn = sniffConn.Conn
-	}
-	
+	// Use reflection to avoid import cycle with internal/core
+	actualConn := unwrapConn(conn)
+
 	// Get raw file descriptor
 	tcpConn, ok := actualConn.(*net.TCPConn)
 	if !ok {
