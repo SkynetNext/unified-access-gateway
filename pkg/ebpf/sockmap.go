@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/SkynetNext/unified-access-gateway/internal/core"
 	"github.com/SkynetNext/unified-access-gateway/pkg/xlog"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -318,8 +319,14 @@ func (m *SockMapManager) IsEnabled() bool {
 
 // getSocketCookie extracts the kernel socket cookie from a net.Conn
 func getSocketCookie(conn net.Conn) (uint64, error) {
+	// Unwrap SniffConn if present (SniffConn wraps the original connection)
+	var actualConn net.Conn = conn
+	if sniffConn, ok := conn.(*core.SniffConn); ok {
+		actualConn = sniffConn.Conn
+	}
+	
 	// Get raw file descriptor
-	tcpConn, ok := conn.(*net.TCPConn)
+	tcpConn, ok := actualConn.(*net.TCPConn)
 	if !ok {
 		return 0, errors.New("not a TCP connection")
 	}
