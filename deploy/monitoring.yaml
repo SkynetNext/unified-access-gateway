@@ -1,6 +1,12 @@
 # UAG Monitoring Resources
-# ServiceMonitor for Prometheus Operator
+# 
+# This file contains TWO independent resources:
+# 1. ServiceMonitor: For Prometheus Operator to auto-discover metrics endpoints
+# 2. ConfigMap: Grafana Dashboard JSON (requires manual import or Grafana sidecar)
 
+# ============================================================================
+# Resource 1: ServiceMonitor (for Prometheus)
+# ============================================================================
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -23,67 +29,187 @@ spec:
       scheme: http
 
 ---
-# Grafana Dashboard ConfigMap (optional)
+# ============================================================================
+# Resource 2: Grafana Dashboard ConfigMap
+# ============================================================================
+# 
+# IMPORTANT: Dashboard Import Methods
+# 
+# Option 1: Automatic Import (if Grafana has sidecar configured)
+#   - Grafana sidecar watches ConfigMaps with label "grafana_dashboard: 1"
+#   - Dashboard will be automatically imported
+#   - Check: kubectl get configmap -n monitoring -l grafana_dashboard=1
+# 
+# Option 2: Manual Import (if sidecar not configured)
+#   1. Get dashboard JSON:
+#      kubectl get configmap uag-grafana-dashboard -n monitoring -o jsonpath='{.data.uag-dashboard\.json}' > dashboard.json
+#   2. In Grafana UI: Dashboards → Import → Upload JSON file
+#   3. Or copy JSON and paste in Grafana import dialog
+#
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: uag-grafana-dashboard
   namespace: monitoring
   labels:
-    grafana_dashboard: "1"
+    grafana_dashboard: "1"  # Label for Grafana sidecar auto-discovery
 data:
   uag-dashboard.json: |
     {
-      "annotations": {
-        "list": []
-      },
-      "title": "Unified Access Gateway",
-      "uid": "uag-dashboard",
-      "version": 1,
-      "panels": [
-        {
-          "title": "Active Connections",
-          "type": "stat",
-          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
-          "targets": [
-            {
-              "expr": "sum(gateway_active_connections)",
-              "legendFormat": "Active"
-            }
-          ]
+      "dashboard": {
+        "id": null,
+        "uid": "uag-dashboard",
+        "title": "Unified Access Gateway",
+        "tags": ["uag", "gateway"],
+        "style": "dark",
+        "timezone": "browser",
+        "schemaVersion": 16,
+        "version": 1,
+        "refresh": "30s",
+        "time": {
+          "from": "now-6h",
+          "to": "now"
         },
-        {
-          "title": "Requests per Second",
-          "type": "graph",
-          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
-          "targets": [
-            {
-              "expr": "sum(rate(gateway_requests_total[1m]))",
-              "legendFormat": "QPS"
-            }
-          ]
+        "timepicker": {},
+        "templating": {
+          "list": []
         },
-        {
-          "title": "Request Latency (p99)",
-          "type": "graph",
-          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
-          "targets": [
-            {
-              "expr": "histogram_quantile(0.99, sum(rate(gateway_request_duration_seconds_bucket[5m])) by (le))",
-              "legendFormat": "p99"
-            }
-          ]
+        "annotations": {
+          "list": []
         },
-        {
-          "title": "Pod Count",
-          "type": "stat",
-          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
-          "targets": [
-            {
-              "expr": "count(up{job=\"uag\"})",
-              "legendFormat": "Pods"
+        "panels": [
+          {
+            "id": 1,
+            "title": "Active Connections",
+            "type": "stat",
+            "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+            "targets": [
+              {
+                "expr": "sum(gateway_active_connections)",
+                "legendFormat": "Active",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "thresholds"},
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"value": null, "color": "green"},
+                    {"value": 1000, "color": "yellow"},
+                    {"value": 5000, "color": "red"}
+                  ]
+                }
+              }
             }
-          ]
-        }
-      ]
+          },
+          {
+            "id": 2,
+            "title": "Pod Count",
+            "type": "stat",
+            "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+            "targets": [
+              {
+                "expr": "count(up{job=\"uag\"})",
+                "legendFormat": "Pods",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "thresholds"},
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"value": null, "color": "green"}
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "id": 3,
+            "title": "Requests per Second",
+            "type": "timeseries",
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+            "targets": [
+              {
+                "expr": "sum(rate(gateway_requests_total[1m]))",
+                "legendFormat": "QPS",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "palette-classic"},
+                "custom": {
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "gradientMode": "none",
+                  "hideFrom": {"tooltip": false, "viz": false, "legend": false},
+                  "lineInterpolation": "linear",
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "scaleDistribution": {"type": "linear"},
+                  "showPoints": "never",
+                  "spanNulls": false
+                },
+                "mappings": [],
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"value": null, "color": "green"}
+                  ]
+                },
+                "unit": "reqps"
+              }
+            }
+          },
+          {
+            "id": 4,
+            "title": "Request Latency (p99)",
+            "type": "timeseries",
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+            "targets": [
+              {
+                "expr": "histogram_quantile(0.99, sum(rate(gateway_request_duration_seconds_bucket[5m])) by (le))",
+                "legendFormat": "p99",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {"mode": "palette-classic"},
+                "custom": {
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "gradientMode": "none",
+                  "hideFrom": {"tooltip": false, "viz": false, "legend": false},
+                  "lineInterpolation": "linear",
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "scaleDistribution": {"type": "linear"},
+                  "showPoints": "never",
+                  "spanNulls": false
+                },
+                "mappings": [],
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"value": null, "color": "green"}
+                  ]
+                },
+                "unit": "s"
+              }
+            }
+          }
+        ]
+      }
     }
